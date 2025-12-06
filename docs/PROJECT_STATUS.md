@@ -37,7 +37,7 @@ Start studying! 🎓
 
 ## Components Overview
 
-### 1. Card Generation (`auto_anki_agent.py`)
+### 1. Card Generation (`auto_anki_agent.py` / `auto_anki` package)
 
 **What it does:**
 - Harvests ChatGPT conversation exports
@@ -47,10 +47,14 @@ Start studying! 🎓
 - Outputs proposed cards to JSON and Markdown
 
 **Stats:**
-- 1,304 lines of Python
-- 6-phase pipeline
-- 10+ heuristic signals
-- State tracking for incremental processing
+- Single-file CLI entrypoint: `auto_anki_agent.py` (now mostly orchestration)
+- Core logic organized into `auto_anki/` modules:
+  - `auto_anki/cards.py` – card structures, HTML deck parsing, caching
+  - `auto_anki/contexts.py` – `ChatTurn`, scoring, harvesting
+  - `auto_anki/dedup.py` – string + semantic deduplication
+  - `auto_anki/codex.py` – prompt building, two-stage pipeline, parsing
+  - `auto_anki/state.py` – state tracking, run directories
+  - `auto_anki/cli.py` – console entrypoint (`auto-anki`)
 
 **Key Features:**
 - Date range filtering

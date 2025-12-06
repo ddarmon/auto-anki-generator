@@ -56,16 +56,48 @@ python3 auto_anki_agent.py \
 - `--contexts-per-run N`: Contexts per codex exec call (default: 8)
 - `--two-stage`: Enable two-stage LLM pipeline (stage-1 filter + stage-2 generator, **default: enabled**)
 - `--single-stage`: Disable two-stage pipeline and use single-stage card generation
-- `--codex-model-stage1 MODEL`: Codex model for fast stage-1 filtering (default: same as `--codex-model`, usually `gpt-5`)
-- `--codex-model-stage2 MODEL`: Codex model for stage-2 card generation (default: same as `--codex-model`, usually `gpt-5`)
+- `--codex-model-stage1 MODEL`: Codex model for fast stage-1 filtering (default: `gpt-5.1`)
+- `--codex-model-stage2 MODEL`: Codex model for stage-2 card generation (default: `gpt-5.1`)
 - `--similarity-threshold FLOAT`: String-based similarity threshold for dedup (default: 0.82)
 - `--dedup-method {string,semantic,hybrid}`: Choose dedup strategy (default: **hybrid**, auto-falls back to string if dependencies unavailable)
 - `--semantic-model NAME`: SentenceTransformers model for semantic dedup (default: all-MiniLM-L6-v2)
 - `--semantic-similarity-threshold FLOAT`: Cosine similarity threshold for semantic dedup (default: 0.85)
 - `--dry-run`: Build prompts without calling codex
 - `--verbose`: Print progress information
-- `--codex-model MODEL`: Override default codex model
+- `--codex-model MODEL`: Override default codex model (falls back to `gpt-5.1` if unset)
 - `--codex-extra-arg ARG`: Passthrough args to codex (repeatable)
+
+### Configuration via `auto_anki_config.json`
+
+Instead of passing the same paths and options every time, you can define defaults in a JSON config file. The agent looks for config in this order:
+
+1. Path from the `AUTO_ANKI_CONFIG` environment variable (if set)
+2. `./auto_anki_config.json` in the current working directory
+3. `~/.auto_anki_config.json` in your home directory
+
+Rules:
+- CLI flags always override values from the config file.
+- Relative paths inside the config are resolved relative to the config file’s directory.
+
+Supported keys mirror the CLI options:
+
+- `chat_root`
+- `deck_glob`
+- `state_file`
+- `output_dir`
+- `cache_dir`
+
+Example `auto_anki_config.json` next to your collection:
+
+```json
+{
+  "chat_root": "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/chatgpt",
+  "deck_glob": "*.html",
+  "state_file": ".auto_anki_agent_state.json",
+  "output_dir": "auto_anki_runs",
+  "cache_dir": ".deck_cache"
+}
+```
 
 ## Output Files
 

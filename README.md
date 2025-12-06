@@ -4,15 +4,101 @@ This repository contains the Auto Anki Agent, an agentic pipeline that
 turns ChatGPT conversations into high‑quality Anki cards and provides a
 review UI with direct AnkiConnect integration.
 
-Most documentation now lives under the `docs/` directory:
+**Minimal end-to-end workflow (using `uv run`):**
 
--   `docs/README_AUTO_ANKI.md` -- main usage guide
--   `docs/QUICK_START.md` -- quick commands to get going
--   `docs/INSTALL.md` -- installation notes
--   `docs/START_HERE.md` -- orientation for new contributors
--   `docs/FUTURE_DIRECTIONS.md` -- roadmap and design notes
--   `docs/CLAUDE.md` -- assistant/developer guide
+``` bash
+# 1. Install (from repo root)
+uv pip install -e ".[ui,semantic]"
 
-The core Python package lives under `auto_anki/` and the original
-monolithic script is still available as `auto_anki_agent.py` for
-backwards compatibility.
+# 2. Generate cards from new conversations
+uv run auto-anki --unprocessed-only --verbose
+
+# 3. Review and import to Anki in the browser
+./launch_ui.sh
+```
+
+## Optional configuration (`auto_anki_config.json`)
+
+You can avoid repeating common CLI flags by creating a JSON config:
+
+- Search order:
+  - Path from `AUTO_ANKI_CONFIG` (if set)
+  - `./auto_anki_config.json` in the current working directory
+  - `~/.auto_anki_config.json` in your home directory
+- CLI flags still override any values set in the config file.
+- Relative paths in the config are resolved relative to the config file’s directory.
+
+Example `auto_anki_config.json` next to this repo:
+
+```json
+{
+  "chat_root": "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/chatgpt",
+  "deck_glob": "*.html",
+  "state_file": ".auto_anki_agent_state.json",
+  "output_dir": "auto_anki_runs",
+  "cache_dir": ".deck_cache"
+}
+```
+
+## Installation (Quick)
+
+Using `uv` (recommended):
+
+``` bash
+# From the repo root
+uv pip install -e ".[ui,semantic]"
+```
+
+Or with plain `pip` (less isolated, but works):
+
+``` bash
+pip install -e ".[ui,semantic]"
+```
+
+This installs:
+
+-   The `auto-anki` console script
+-   Core dependencies (BeautifulSoup, json-repair)
+-   Optional extras:
+    -   `ui` -- Shiny UI + plotting for interactive review
+    -   `semantic` -- SentenceTransformers + FAISS for semantic dedup
+
+For more detail (platform notes, troubleshooting), see
+`docs/INSTALL.md`.
+
+## Examples
+
+**Basic usage (generate cards from a date range):**
+
+``` bash
+python3 auto_anki_agent.py --date-range 2025-10 --max-contexts 10 --verbose
+```
+
+**Daily workflow using the legacy script:**
+
+``` bash
+# 1. Generate cards from new conversations
+python3 auto_anki_agent.py --unprocessed-only --verbose
+
+# 2. Launch the review UI and import to Anki
+./launch_ui.sh
+```
+
+**Using the installed console script (recommended via `uv run`):**
+
+``` bash
+uv run auto-anki --unprocessed-only --verbose
+```
+
+**Tuning deduplication behaviour:**
+
+``` bash
+# Hybrid (default): string + semantic
+python3 auto_anki_agent.py --dedup-method hybrid --verbose
+
+# Semantic only
+python3 auto_anki_agent.py --dedup-method semantic --verbose
+
+# String only (no embeddings)
+python3 auto_anki_agent.py --dedup-method string --verbose
+```

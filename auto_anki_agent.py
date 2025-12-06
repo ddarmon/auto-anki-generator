@@ -25,233 +25,65 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
-import subprocess
-import shlex
-import textwrap
-from collections import Counter, defaultdict
-from dataclasses import dataclass, asdict
+from collections import defaultdict
+from dataclasses import asdict
 from datetime import datetime
-from difflib import SequenceMatcher
-from glob import glob
-from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List
 
-from bs4 import BeautifulSoup  # type: ignore
-from json_repair import repair_json
-
-try:
-    import faiss
-    FAISS_AVAILABLE = True
-except ImportError:
-    FAISS_AVAILABLE = False
+from auto_anki.cards import Card, collect_decks
+from auto_anki.contexts import ChatTurn, DateRangeFilter, harvest_chat_contexts
+from auto_anki.codex import (
+    build_codex_filter_prompt,
+    build_codex_prompt,
+    chunked,
+    format_cards_as_markdown,
+    parse_codex_response_robust,
+    run_codex_exec,
+    run_codex_pipeline,
+)
+from auto_anki.dedup import prune_contexts
+from auto_anki.state import StateTracker, ensure_run_dir
 
 # Silence HuggingFace tokenizers fork/parallelism warnings
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
-class DateRangeFilter:
-    """Parse and apply date range filters to conversation file paths."""
-
-    def __init__(self, date_range_str: Optional[str]):
-        self.start_date: Optional[str] = None
-        self.end_date: Optional[str] = None
-
-        if not date_range_str:
-            return
-
-        # Support formats: "2025-10", "2025-10-01:2025-10-31"
-        if ':' in date_range_str:
-            parts = date_range_str.split(':', 1)
-            self.start_date = parts[0].strip()
-            self.end_date = parts[1].strip()
-        else:
-            # Single month format like "2025-10"
-            if re.match(r'^\d{4}-\d{2}$', date_range_str):
-                self.start_date = f"{date_range_str}-01"
-                # Approximate end of month
-                year, month = map(int, date_range_str.split('-'))
-                if month == 12:
-                    self.end_date = f"{year+1}-01-01"
-                else:
-                    self.end_date = f"{year}-{month+1:02d}-01"
-            else:
-                self.start_date = date_range_str
-
-    def matches(self, path: Path) -> bool:
-        """Check if a conversation file path matches the date range."""
-        if not self.start_date:
-            return True
-
-        # Extract date from filename like "2025-10-01_topic.md"
-        match = re.search(r'(\d{4}-\d{2}-\d{2})', path.name)
-        if not match:
-            return True  # If no date found, include it
-
-        file_date = match.group(1)
-
-        if self.start_date and file_date < self.start_date:
-            return False
-        if self.end_date and file_date >= self.end_date:
-            return False
-
-        return True
-
-
-class StateTracker:
-    """Track processed conversations and run history."""
-
-    def __init__(self, path: Path):
-        self.path = path
-        self.data = self._load()
-
-    def _load(self) -> Dict[str, Any]:
-        if self.path.exists():
-            try:
-                return json.loads(self.path.read_text())
-            except json.JSONDecodeError:
-                raise SystemExit(f"State file {self.path} is corrupted; delete or fix it.")
-        return {
-            "processed_files": {},
-            "seen_contexts": [],
-            "last_run": None,
-            "run_history": []
-        }
-
-    def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, indent=2))
-
-    def is_file_processed(self, file_path: Path) -> bool:
-        """Check if a conversation file has been processed."""
-        return str(file_path) in self.data.get("processed_files", {})
-
-    def mark_file_processed(self, file_path: Path, cards_generated: int = 0) -> None:
-        """Mark a file as processed."""
-        if "processed_files" not in self.data:
-            self.data["processed_files"] = {}
-        self.data["processed_files"][str(file_path)] = {
-            "processed_at": datetime.now().isoformat(),
-            "cards_generated": cards_generated
-        }
-
-    def get_seen_context_ids(self) -> set[str]:
-        """Get set of previously seen context IDs."""
-        return set(self.data.get("seen_contexts", []))
-
-    def add_context_ids(self, context_ids: List[str]) -> None:
-        """Add new context IDs to the seen list."""
-        seen = self.get_seen_context_ids()
-        seen.update(context_ids)
-        self.data["seen_contexts"] = list(seen)
-
-    def record_run(self, run_dir: Path, contexts_sent: int) -> None:
-        """Record a run in history."""
-        if "run_history" not in self.data:
-            self.data["run_history"] = []
-        self.data["run_history"].append({
-            "run_dir": str(run_dir),
-            "timestamp": datetime.now().isoformat(),
-            "contexts_sent": contexts_sent
-        })
-        self.data["last_run"] = datetime.now().isoformat()
-
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
-QUESTION_WORDS = {
-    "what",
-    "why",
-    "how",
-    "when",
-    "where",
-    "who",
-    "which",
-    "explain",
-    "describe",
-    "define",
-    "list",
-    "compare",
-    "give",
-    "teach",
-}
+def _load_config() -> tuple[Dict[str, Any], Optional[Path]]:
+    """
+    Load optional configuration for default paths and settings.
 
-STOPWORDS = {
-    "the",
-    "and",
-    "for",
-    "that",
-    "with",
-    "from",
-    "this",
-    "have",
-    "into",
-    "your",
-    "about",
-    "they",
-    "their",
-    "them",
-    "over",
-    "each",
-    "such",
-    "also",
-    "been",
-    "than",
-    "just",
-    "will",
-    "only",
-    "much",
-    "more",
-    "into",
-    "used",
-    "very",
-    "make",
-    "made",
-    "even",
-    "most",
-    "like",
-    "some",
-    "what",
-    "when",
-    "where",
-    "how",
-    "why",
-}
+    Search order:
+    1. Path from AUTO_ANKI_CONFIG (if set)
+    2. ./auto_anki_config.json in current working directory
+    3. ~/.auto_anki_config.json in the user home directory
 
-ENTRY_RE = re.compile(
-    r"^\[(?P<timestamp>[^\]]+)\]\s+(?P<role>user|assistant|tool):\s*$", re.IGNORECASE
-)
+    Relative paths in the config are resolved relative to the config file's
+    directory. This makes it easy to keep a config next to the source
+    checkout and have outputs land there even when running the installed
+    package from site-packages.
+    """
+    candidates: List[Path] = []
+    env_path = os.getenv("AUTO_ANKI_CONFIG")
+    if env_path:
+        candidates.append(Path(env_path).expanduser())
+    candidates.append(Path.cwd() / "auto_anki_config.json")
+    candidates.append(Path.home() / ".auto_anki_config.json")
 
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text())
+            return data, path
+        except json.JSONDecodeError:
+            print(f"⚠️  Ignoring invalid config file (JSON parse error): {path}")
+            break
 
-@dataclass
-class Card:
-    deck: str
-    front: str
-    back: str
-    tags: List[str]
-    meta: str
-    data_search: str
-    front_norm: str
-    back_norm: str
-    source_path: Optional[Path] = None  # Track source HTML file for cache invalidation
-
-
-@dataclass
-class ChatTurn:
-    context_id: str
-    source_path: str
-    source_title: Optional[str]
-    source_url: Optional[str]
-    user_timestamp: Optional[str]
-    user_prompt: str
-    assistant_answer: str
-    assistant_char_count: int
-    score: float
-    signals: Dict[str, Any]
-    key_terms: List[str]
-    key_points: List[str]
+    return {}, None
 
 
 def parse_args() -> argparse.Namespace:
@@ -451,615 +283,6 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def normalize_text(value: str) -> str:
-    collapsed = re.sub(r"[^a-z0-9]+", " ", value.lower())
-    return re.sub(r"\s+", " ", collapsed).strip()
-
-
-def parse_html_deck(html_path: Path, cache_path: Optional[Path] = None) -> List[Card]:
-    """Parse HTML deck with optional caching to avoid re-parsing large files."""
-    # Check cache if provided
-    if cache_path and cache_path.exists():
-        try:
-            cache_data = json.loads(cache_path.read_text())
-            # Check if HTML file hasn't been modified since cache
-            html_mtime = html_path.stat().st_mtime
-            if cache_data.get("html_mtime") == html_mtime:
-                # Reconstruct Card objects from cache
-                return [
-                    Card(
-                        deck=c["deck"],
-                        front=c["front"],
-                        back=c["back"],
-                        tags=c["tags"],
-                        meta=c["meta"],
-                        data_search=c["data_search"],
-                        front_norm=c["front_norm"],
-                        back_norm=c["back_norm"],
-                        source_path=html_path,  # Track source for cache invalidation
-                    )
-                    for c in cache_data["cards"]
-                ]
-        except (json.JSONDecodeError, KeyError):
-            pass  # Cache invalid, re-parse
-
-    # Parse HTML (this can be slow for large files)
-    soup = BeautifulSoup(html_path.read_text(), "html.parser")
-    deck = html_path.stem.replace("_", " ")
-    cards: List[Card] = []
-    for section in soup.select("section.card-wrapper"):
-        front_el = section.select_one(".front")
-        back_el = section.select_one(".back")
-        if not front_el or not back_el:
-            continue
-        front = front_el.get_text("\n", strip=True)
-        back = back_el.get_text("\n", strip=True)
-        meta_el = section.select_one(".card-meta")
-        meta_text = meta_el.get_text(" ", strip=True) if meta_el else ""
-        data_search = section.get("data-search") or ""
-        tags = [
-            tag.strip()
-            for chunk in meta_text.split("--")
-            for tag in [chunk.strip()]
-            if tag
-        ]
-        cards.append(
-            Card(
-                deck=deck,
-                front=front,
-                back=back,
-                tags=tags,
-                meta=meta_text,
-                data_search=data_search,
-                front_norm=normalize_text(front),
-                back_norm=normalize_text(back),
-                source_path=html_path,  # Track source for cache invalidation
-            )
-        )
-
-    # Save to cache if path provided
-    if cache_path:
-        cache_data = {
-            "html_mtime": html_path.stat().st_mtime,
-            "cards": [
-                {k: v for k, v in asdict(c).items() if k != "source_path"}
-                for c in cards
-            ]
-        }
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(cache_data, indent=2))
-
-    return cards
-
-
-def collect_decks(pattern: str, cache_dir: Optional[Path] = None) -> List[Card]:
-    """Collect cards from HTML decks with optional caching."""
-    cards: List[Card] = []
-    for path_str in sorted(glob(pattern)):
-        path = Path(path_str)
-        if not path.is_file():
-            continue
-
-        # Use cache if cache_dir provided
-        cache_path = None
-        if cache_dir:
-            cache_path = cache_dir / f"{path.stem}_cards.json"
-
-        cards.extend(parse_html_deck(path, cache_path))
-    return cards
-
-
-def parse_chat_metadata(header_block: str) -> Dict[str, str]:
-    metadata: Dict[str, str] = {}
-    title_match = re.search(r"^#\s+(?P<title>.+)$", header_block, re.MULTILINE)
-    if title_match:
-        metadata["title"] = title_match.group("title").strip()
-    for line in header_block.splitlines():
-        if line.startswith("- "):
-            parts = line[2:].split(":", 1)
-            if len(parts) == 2:
-                key = parts[0].strip().lower()
-                value = parts[1].strip()
-                metadata[key] = value
-    return metadata
-
-
-def parse_chat_entries(body: str) -> List[Dict[str, Any]]:
-    entries: List[Dict[str, Any]] = []
-    current: Optional[Dict[str, Any]] = None
-    for line in body.splitlines():
-        match = ENTRY_RE.match(line)
-        if match:
-            if current is not None:
-                current["text"] = "\n".join(current["lines"]).strip()
-                entries.append(current)
-            current = {
-                "role": match.group("role").lower(),
-                "timestamp": match.group("timestamp").strip(),
-                "lines": [],
-            }
-            continue
-        if current is not None:
-            current["lines"].append(line)
-    if current is not None:
-        current["text"] = "\n".join(current["lines"]).strip()
-        entries.append(current)
-    return entries
-
-
-def extract_turns(entries: Sequence[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
-    turns: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
-    i = 0
-    while i < len(entries):
-        entry = entries[i]
-        if entry["role"] != "user":
-            i += 1
-            continue
-        user_entry = entry
-        j = i + 1
-        assistant_entry: Optional[Dict[str, Any]] = None
-        while j < len(entries):
-            candidate = entries[j]
-            if candidate["role"] == "assistant":
-                assistant_entry = candidate
-                break
-            j += 1
-        if assistant_entry and user_entry["text"] and assistant_entry["text"]:
-            turns.append((user_entry, assistant_entry))
-            i = j + 1
-        else:
-            i += 1
-    return turns
-
-
-def detect_signals(user_text: str, assistant_text: str) -> Tuple[float, Dict[str, Any]]:
-    user_lower = user_text.lower()
-    assistant_lower = assistant_text.lower()
-    signals: Dict[str, Any] = {}
-    score = 0.0
-
-    question_like = "?" in user_text or any(
-        user_lower.startswith(word + " ") for word in QUESTION_WORDS
-    )
-    signals["question_like"] = question_like
-    if question_like:
-        score += 1.0
-
-    definition_like = any(
-        phrase in assistant_lower
-        for phrase in [
-            "stands for",
-            "is defined as",
-            "refers to",
-            "meaning:",
-            "means that",
-            "definition",
-        ]
-    )
-    signals["definition_like"] = definition_like
-    if definition_like:
-        score += 0.45
-
-    bullet_count = sum(
-        1
-        for line in assistant_text.splitlines()
-        if line.strip().startswith(("-", "*", "1.", "2.", "3."))
-    )
-    signals["bullet_count"] = bullet_count
-    if bullet_count:
-        score += min(0.35 + 0.03 * bullet_count, 0.65)
-
-    heading_count = assistant_text.count("### ")
-    signals["heading_count"] = heading_count
-    if heading_count:
-        score += min(0.25 + 0.05 * heading_count, 0.45)
-
-    code_blocks = assistant_text.count("```")
-    signals["code_blocks"] = code_blocks
-    if code_blocks:
-        score += 0.2
-
-    answer_len = len(assistant_text)
-    signals["answer_length"] = answer_len
-    if 80 <= answer_len <= 2200:
-        score += 0.55
-    elif answer_len > 2200:
-        score += 0.2
-
-    imperative = any(
-        phrase in user_lower for phrase in ["walk me through", "show me", "give me", "steps"]
-    )
-    signals["imperative"] = imperative
-    if imperative:
-        score += 0.2
-
-    return score, signals
-
-
-def extract_key_terms(text: str, limit: int = 6) -> List[str]:
-    words = re.findall(r"[A-Za-z][A-Za-z0-9\-]{3,}", text.lower())
-    counts = Counter(word for word in words if word not in STOPWORDS)
-    return [word for word, _ in counts.most_common(limit)]
-
-
-def extract_key_points(text: str, limit: int = 4) -> List[str]:
-    points: List[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("#", "-", "*")):
-            cleaned = stripped.lstrip("#-*0123456789. ").strip()
-            if cleaned:
-                points.append(cleaned)
-        if len(points) >= limit:
-            break
-    return points
-
-
-def harvest_chat_contexts(
-    chat_root: Path,
-    seen_ids: set[str],
-    state_tracker: Optional[StateTracker],
-    date_filter: Optional[DateRangeFilter],
-    args: argparse.Namespace,
-) -> List[ChatTurn]:
-    contexts: List[ChatTurn] = []
-    files = sorted(
-        (p for p in chat_root.rglob("*.md")),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-
-    # Apply filters
-    if date_filter:
-        files = [f for f in files if date_filter.matches(f)]
-    if args.unprocessed_only and state_tracker:
-        files = [f for f in files if not state_tracker.is_file_processed(f)]
-
-    if args.max_chat_files:
-        files = files[: args.max_chat_files]
-    per_file_counter: Dict[Path, int] = defaultdict(int)
-
-    for path in files:
-        if per_file_counter[path] >= args.per_file_context_limit:
-            continue
-        text = path.read_text()
-        if "\n---" in text:
-            header, body = text.split("\n---", 1)
-        else:
-            header, body = text, ""
-        metadata = parse_chat_metadata(header)
-        entries = parse_chat_entries(body)
-        turns = extract_turns(entries)
-        for user_entry, assistant_entry in turns:
-            combined_key = f"{path}:{user_entry.get('timestamp','')}"
-            context_id = sha256(
-                (combined_key + user_entry["text"] + assistant_entry["text"]).encode("utf-8")
-            ).hexdigest()
-            if context_id in seen_ids:
-                continue
-            score, signals = detect_signals(user_entry["text"], assistant_entry["text"])
-            if score < args.min_score:
-                continue
-            if per_file_counter[path] >= args.per_file_context_limit:
-                break
-            assistant_full = assistant_entry["text"].strip()
-            assistant_trimmed = assistant_full[: args.assistant_char_limit]
-            key_terms = extract_key_terms(user_entry["text"] + " " + assistant_full)
-            key_points = extract_key_points(assistant_full)
-            context = ChatTurn(
-                context_id=context_id,
-                source_path=str(path),
-                source_title=metadata.get("title"),
-                source_url=metadata.get("url"),
-                user_timestamp=user_entry.get("timestamp"),
-                user_prompt=user_entry["text"].strip(),
-                assistant_answer=assistant_trimmed,
-                assistant_char_count=len(assistant_full),
-                score=score,
-                signals=signals,
-                key_terms=key_terms,
-                key_points=key_points,
-            )
-            contexts.append(context)
-            per_file_counter[path] += 1
-            if len(contexts) >= args.max_contexts:
-                return contexts
-    return contexts
-
-
-class SemanticCardIndex:
-    """
-    Semantic index over existing cards using sentence-transformer embeddings.
-
-    This is used for semantic deduplication of contexts against existing deck
-    content. Uses FAISS for fast similarity search and caches embeddings to disk.
-    """
-
-    def __init__(
-        self,
-        cards: List[Card],
-        sentence_transformer_cls: Any,
-        np_module: Any,
-        model_name: str,
-        verbose: bool = False,
-        cache_dir: Optional[Path] = None,
-    ) -> None:
-        self.cards = cards
-        self._np = np_module
-        self.model_name = model_name
-        self.verbose = verbose
-        self.cache_dir = Path(cache_dir) if cache_dir else Path(".deck_cache")
-        self.cache_path = self.cache_dir / "embeddings" / "all_decks.faiss"
-        self.meta_path = self.cache_dir / "embeddings" / "all_decks.meta.json"
-
-        if verbose:
-            print(f"Loading semantic dedup model '{model_name}'...")
-
-        self.model = sentence_transformer_cls(model_name)
-
-        # Try to load from cache first (if FAISS available)
-        if FAISS_AVAILABLE and self._load_cache(cards):
-            if verbose:
-                print(f"  ✓ Loaded embeddings from cache ({len(cards)} cards)")
-            return
-
-        # Cache miss or FAISS unavailable: generate embeddings
-        if verbose:
-            cache_reason = "FAISS not available" if not FAISS_AVAILABLE else "cache miss"
-            print(f"  Building semantic index ({len(cards)} cards, {cache_reason})...")
-
-        # Build embeddings for all cards using front+back text
-        texts = [
-            (card.front + " " + card.back).strip()
-            for card in cards
-            if (card.front or card.back)
-        ]
-
-        if not texts:
-            # No cards – keep a trivial empty index
-            if FAISS_AVAILABLE:
-                self.index = faiss.IndexFlatIP(384)  # 384 = all-MiniLM-L6-v2 dim
-            else:
-                self.embeddings = np_module.zeros((0, 1), dtype="float32")
-            return
-
-        emb = self.model.encode(texts, convert_to_numpy=True)
-        emb = emb.astype("float32")
-        norms = np_module.linalg.norm(emb, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        emb_normalized = emb / norms
-
-        if FAISS_AVAILABLE:
-            self.index = self._build_faiss_index(emb_normalized)
-            self._save_cache(cards)
-        else:
-            # Fallback to NumPy
-            self.embeddings = emb_normalized
-
-    def _build_faiss_index(self, embeddings: Any) -> Any:
-        """Build FAISS IndexFlatIP for exact cosine similarity."""
-        embedding_dim = embeddings.shape[1]
-        index = faiss.IndexFlatIP(embedding_dim)
-        index.add(embeddings)
-        return index
-
-    def _load_cache(self, cards: List[Card]) -> bool:
-        """Load FAISS index from cache if valid."""
-        if not self.cache_path.exists() or not self.meta_path.exists():
-            return False
-
-        try:
-            # Load and validate metadata
-            meta = json.loads(self.meta_path.read_text())
-
-            if not self._is_cache_valid(meta, cards):
-                return False
-
-            # Load FAISS index
-            self.index = faiss.read_index(str(self.cache_path))
-            return True
-
-        except (json.JSONDecodeError, RuntimeError, Exception):
-            # Cache corrupted or incompatible
-            return False
-
-    def _is_cache_valid(self, meta: Dict[str, Any], cards: List[Card]) -> bool:
-        """Check if cached embeddings are still valid."""
-        # Check model name
-        if meta.get("model_name") != self.model_name:
-            return False
-
-        # Check card count
-        if meta.get("card_count") != len(cards):
-            return False
-
-        # Check deck file mtimes
-        current_deck_files = self._get_deck_mtimes(cards)
-        cached_deck_files = meta.get("deck_files", {})
-
-        if current_deck_files != cached_deck_files:
-            return False
-
-        return True
-
-    def _save_cache(self, cards: List[Card]) -> None:
-        """Save FAISS index and metadata to cache."""
-        try:
-            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Save FAISS index
-            faiss.write_index(self.index, str(self.cache_path))
-
-            # Save metadata
-            meta = {
-                "model_name": self.model_name,
-                "deck_files": self._get_deck_mtimes(cards),
-                "card_count": len(cards),
-                "embedding_dim": self.index.d,
-                "created_at": datetime.now().isoformat(),
-                "faiss_index_type": "IndexFlatIP",
-            }
-            self.meta_path.write_text(json.dumps(meta, indent=2))
-
-        except Exception as e:
-            if self.verbose:
-                print(f"  Warning: Failed to save cache: {e}")
-
-    def _get_deck_mtimes(self, cards: List[Card]) -> Dict[str, float]:
-        """Get dict of deck file paths -> mtimes for cache invalidation."""
-        deck_files = {}
-        for card in cards:
-            if card.source_path and card.source_path.exists():
-                path = str(card.source_path)
-                if path not in deck_files:
-                    deck_files[path] = card.source_path.stat().st_mtime
-        return deck_files
-
-    def is_duplicate(self, context: ChatTurn, threshold: float) -> bool:
-        """Return True if context is semantically close to any existing card."""
-        text = (context.user_prompt + " " + context.assistant_answer).strip()
-        if not text:
-            return False
-
-        if FAISS_AVAILABLE:
-            # FAISS-based search
-            if self.index.ntotal == 0:
-                return False
-
-            query_emb = self.model.encode([text], convert_to_numpy=True)
-            query_vec = query_emb[0].astype("float32")
-
-            # Normalize query vector
-            norm = self._np.linalg.norm(query_vec)
-            if norm == 0:
-                return False
-            query_vec = query_vec / norm
-
-            # FAISS search: get top-1 match
-            distances, indices = self.index.search(
-                query_vec.reshape(1, -1), k=1
-            )
-
-            max_similarity = distances[0][0]
-            return max_similarity >= threshold
-
-        else:
-            # NumPy fallback
-            if self.embeddings.shape[0] == 0:
-                return False
-
-            query_emb = self.model.encode([text], convert_to_numpy=True)
-            query_vec = query_emb[0].astype("float32")
-            norm = self._np.linalg.norm(query_vec)
-            if norm == 0:
-                return False
-            query_vec = query_vec / norm
-
-            scores = self.embeddings @ query_vec
-            max_score = float(scores.max())
-            return max_score >= threshold
-
-
-def quick_similarity(s1: str, s2: str) -> float:
-    """Fast approximate similarity using set overlap of words."""
-    if not s1 or not s2:
-        return 0.0
-    words1 = set(s1.split())
-    words2 = set(s2.split())
-    if not words1 or not words2:
-        return 0.0
-    intersection = len(words1 & words2)
-    union = len(words1 | words2)
-    return intersection / union if union > 0 else 0.0
-
-
-def is_duplicate_context(
-    context: ChatTurn, cards: List[Card], threshold: float
-) -> bool:
-    """Check if context is duplicate against existing cards with optimization."""
-    user_norm = normalize_text(context.user_prompt)
-    answer_norm = normalize_text(context.assistant_answer)
-
-    # Quick pre-filter: only do expensive SequenceMatcher on promising candidates
-    quick_threshold = threshold * 0.6  # Lower threshold for quick check
-
-    for card in cards:
-        if not card.front_norm and not card.back_norm:
-            continue
-
-        # Quick check first (fast)
-        if card.front_norm:
-            if quick_similarity(user_norm, card.front_norm) >= quick_threshold:
-                # Only do expensive check if quick check passes
-                if SequenceMatcher(None, user_norm, card.front_norm).ratio() >= threshold:
-                    return True
-
-        if card.back_norm:
-            if quick_similarity(answer_norm, card.back_norm) >= quick_threshold:
-                # Only do expensive check if quick check passes
-                if SequenceMatcher(None, answer_norm, card.back_norm).ratio() >= threshold:
-                    return True
-
-    return False
-
-
-def prune_contexts(
-    contexts: List[ChatTurn], cards: List[Card], args: argparse.Namespace
-) -> List[ChatTurn]:
-    """Filter contexts to remove duplicates against existing cards."""
-    pruned: List[ChatTurn] = []
-    total = len(contexts)
-
-    semantic_index: Optional[SemanticCardIndex] = None
-    if args.dedup_method in ("semantic", "hybrid"):
-        try:
-            from sentence_transformers import SentenceTransformer  # type: ignore
-            import numpy as _np  # type: ignore
-
-            if args.verbose:
-                print("Building semantic index over existing cards for deduplication...")
-
-            semantic_index = SemanticCardIndex(
-                cards=cards,
-                sentence_transformer_cls=SentenceTransformer,
-                np_module=_np,
-                model_name=args.semantic_model,
-                verbose=args.verbose,
-                cache_dir=args.cache_dir,
-            )
-        except ImportError:
-            # Fall back to string-based deduplication
-            print("⚠ Semantic deduplication dependencies not found. Falling back to string-based deduplication.")
-            print("  For better duplicate detection, install: uv pip install -e '.[semantic]'")
-            print("  or: pip install sentence-transformers numpy faiss-cpu")
-            print()
-
-    for idx, context in enumerate(sorted(contexts, key=lambda c: c.score, reverse=True), 1):
-        if args.verbose:
-            print(f"  Checking context {idx}/{total} for duplicates...", end='\r')
-
-        is_dup = False
-
-        # String-based deduplication (current default behaviour)
-        if args.dedup_method in ("string", "hybrid"):
-            if is_duplicate_context(context, cards, args.similarity_threshold):
-                is_dup = True
-
-        # Semantic deduplication using embeddings
-        if not is_dup and semantic_index is not None:
-            if semantic_index.is_duplicate(context, args.semantic_similarity_threshold):
-                is_dup = True
-
-        if is_dup:
-            continue
-        pruned.append(context)
-
-    if args.verbose:
-        print(f"  Checked {total} contexts for duplicates - done!     ")
-
-    return pruned
-
-
 def select_existing_cards_for_prompt(cards: List[Card], limit: int) -> List[Card]:
     if len(cards) <= limit:
         return cards
@@ -1078,432 +301,6 @@ def select_existing_cards_for_prompt(cards: List[Card], limit: int) -> List[Card
     return selected[:limit]
 
 
-def chunked(seq: Sequence[Any], size: int) -> Iterable[List[Any]]:
-    for start in range(0, len(seq), size):
-        yield list(seq[start : start + size])
-
-
-def format_cards_as_markdown(
-    cards_json: List[Dict[str, Any]],
-    contexts: List[ChatTurn],
-    run_timestamp: str
-) -> str:
-    """
-    Format proposed cards as markdown following Anki best practices.
-    """
-    context_map = {ctx.context_id: ctx for ctx in contexts}
-
-    lines = [
-        "# Proposed Anki Cards",
-        f"",
-        f"Generated: {run_timestamp}",
-        f"Total cards: {len(cards_json)}",
-        "",
-        "---",
-        ""
-    ]
-
-    for card_data in cards_json:
-        context_id = card_data.get("context_id", "unknown")
-        context = context_map.get(context_id)
-
-        # Card header
-        lines.append(f"## Card: {card_data.get('front', 'No front')[:60]}...")
-        lines.append("")
-
-        # Metadata
-        lines.append(f"**Deck:** {card_data.get('deck', 'unknown')}")
-        lines.append(f"**Style:** {card_data.get('card_style', 'basic')}")
-
-        # Handle confidence as either string or float
-        confidence = card_data.get('confidence', 0.0)
-        try:
-            confidence_float = float(confidence) if confidence else 0.0
-            lines.append(f"**Confidence:** {confidence_float:.2f}")
-        except (ValueError, TypeError):
-            lines.append(f"**Confidence:** {confidence}")
-
-        if card_data.get('tags'):
-            lines.append(f"**Tags:** {', '.join(card_data['tags'])}")
-
-        # Source info
-        if context:
-            lines.append("")
-            lines.append(f"**Source:** {Path(context.source_path).name}")
-            if context.source_title:
-                lines.append(f"**Title:** {context.source_title}")
-            if context.user_timestamp:
-                lines.append(f"**Date:** {context.user_timestamp}")
-
-        lines.append("")
-
-        # Card content
-        lines.append("### Front")
-        lines.append("")
-        lines.append(card_data.get('front', ''))
-        lines.append("")
-
-        lines.append("### Back")
-        lines.append("")
-        lines.append(card_data.get('back', ''))
-        lines.append("")
-
-        # Notes
-        if card_data.get('notes'):
-            lines.append("### Notes")
-            lines.append("")
-            lines.append(card_data['notes'])
-            lines.append("")
-
-        lines.append("---")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def build_codex_prompt(
-    cards: List[Card],
-    contexts: List[ChatTurn],
-    args: argparse.Namespace,
-) -> str:
-    """
-    Build the stage-2 card generation prompt.
-    """
-    cards_payload = [
-        {
-            "deck": card.deck,
-            "front": card.front,
-            "back": card.back,
-            "tags": card.tags,
-        }
-        for card in cards
-    ]
-    contexts_payload = [
-        {
-            "context_id": ctx.context_id,
-            "source_path": ctx.source_path,
-            "source_title": ctx.source_title,
-            "source_url": ctx.source_url,
-            "user_timestamp": ctx.user_timestamp,
-            "user_prompt": ctx.user_prompt,
-            "assistant_answer": ctx.assistant_answer,
-            "assistant_char_count": ctx.assistant_char_count,
-            "score": round(ctx.score, 3),
-            "signals": ctx.signals,
-            "key_terms": ctx.key_terms,
-            "key_points": ctx.key_points,
-        }
-        for ctx in contexts
-    ]
-    contract = {
-        "cards": [
-            {
-                "context_id": "string",
-                "deck": "string",
-                "card_style": "basic|cloze|list|multi",
-                "front": "string",
-                "back": "string",
-                "tags": ["list", "of", "tags"],
-                "confidence": "0-1 float",
-                "notes": "why this card matters / follow-ups",
-            }
-        ],
-        "skipped": [
-            {
-                "context_id": "string",
-                "reason": "why the context was skipped (duplicates, unclear, etc.)",
-            }
-        ],
-        "topics_to_track": [
-            {
-                "topic": "string",
-                "justification": "short rationale / suggested next prompt",
-            }
-        ],
-    }
-    payload = {
-        "existing_cards": cards_payload,
-        "candidate_contexts": contexts_payload,
-        "output_contract": contract,
-    }
-    instructions = textwrap.dedent(
-        """
-        CRITICAL: You MUST respond with ONLY valid JSON matching the output_contract below.
-        Do NOT include markdown, explanations, or any text outside the JSON structure.
-        Do NOT wrap the JSON in ```json blocks.
-
-        You are operating as the decision layer of an autonomous spaced-repetition agent.
-
-        ## Core Philosophy
-
-        1. **Understand First, Memorize Second**: Each card should reflect a clear mental model,
-           flowing logically from general to specific concepts.
-        2. **Build Upon the Basics**: Order cards logically, starting with foundational concepts
-           before moving to detailed information.
-
-        ## The Golden Rule: Minimum Information Principle
-
-        **Each card must isolate the smallest possible piece of information.**
-        - Questions should be precise and unambiguous
-        - Answers should be as short as possible while remaining complete
-        - NEVER create complex cards that cram multiple unrelated facts together
-        - Break down sets/lists into individual cards (one item per card)
-
-        Example of BAD (too complex):
-        Q: What are the characteristics of gradient boosting?
-        A: Uses decision trees, minimizes loss via gradient descent in function space,
-           builds additive models sequentially, and requires tuning learning rate.
-
-        Example of GOOD (atomic):
-        Q: What type of base learner does gradient boosting typically use?
-        A: **Decision trees** (usually shallow trees)
-
-        ## Card Formats
-
-        Use the format that best fits the information:
-
-        1. **Question/Answer (basic)**: Default format for most concepts
-           - Make questions clear and specific
-           - Answers should be concise and self-contained
-
-        2. **Cloze Deletion**: Ideal for facts, definitions, vocabulary
-           - Use [...] to mark the part to recall
-           - Especially good for "X is defined as Y" type statements
-
-        ## Content Guidelines
-
-        - **Combat Interference**: When concepts are easily confused, create cards that
-          explicitly ask for the distinction
-        - **Optimize Wording**: Remove extraneous words. Aim for rapid comprehension.
-        - **Use Context Cues**: For ambiguous terms, prefix with context (e.g., "(ML) What is gradient...")
-        - **Handle Sets**: NEVER ask for a list of more than 2-3 items. Break down into
-          multiple cards asking for each item separately.
-        - **Use LaTeX**: For mathematical notation, use LaTeX with proper delimiters
-
-        ## Your Task
-
-        For each `candidate_context`:
-        1. Decide if it contains learning-worthy knowledge (not trivial, not already covered)
-        2. Check against `existing_cards` to avoid duplicates
-        3. If justified, create one or MORE atomic cards (break complex topics into multiple cards)
-        4. Choose appropriate deck based on topic area
-        5. Add relevant tags for organization
-        6. Provide confidence score (0-1) and brief notes on why this card matters
-
-        ## Output Requirements
-
-        Return ONLY valid JSON adhering to `output_contract`. Critical rules:
-        - NO markdown fencing (no ```json blocks)
-        - NO explanatory text before or after the JSON
-        - NO comments inside the JSON
-        - START your response with `{` and END with `}`
-        - `card_style` should be: basic, cloze, or list
-        - `confidence`: 0.0-1.0 (higher = more confident this card is valuable)
-        - `notes`: Brief rationale for why this card was created
-        - `skipped`: Contexts you skipped and why (too trivial, duplicate, unclear, etc.)
-
-        YOUR ENTIRE RESPONSE MUST BE VALID, PARSEABLE JSON.
-        """
-    ).strip()
-    return instructions + "\n\n" + json.dumps(payload, indent=2, ensure_ascii=False)
-
-
-def build_codex_filter_prompt(
-    contexts: List[ChatTurn],
-    args: argparse.Namespace,
-) -> str:
-    """
-    Build the stage-1 filtering prompt for the two-stage pipeline.
-
-    Stage 1 should be fast and cheap: it only decides which contexts
-    are worth sending to the more expensive card-generation stage.
-    """
-    contexts_payload = [
-        {
-            "context_id": ctx.context_id,
-            "source_path": ctx.source_path,
-            "source_title": ctx.source_title,
-            "source_url": ctx.source_url,
-            "user_timestamp": ctx.user_timestamp,
-            "user_prompt": ctx.user_prompt,
-            "assistant_answer": ctx.assistant_answer,
-            "assistant_char_count": ctx.assistant_char_count,
-            "score": round(ctx.score, 3),
-            "signals": ctx.signals,
-            "key_terms": ctx.key_terms,
-            "key_points": ctx.key_points,
-        }
-        for ctx in contexts
-    ]
-    contract = {
-        "filter_decisions": [
-            {
-                "context_id": "string",
-                "keep": "boolean (true if this context should be sent to the expensive card-generation stage)",
-                "reason": "short reason for keeping or skipping this context",
-            }
-        ]
-    }
-    payload = {
-        "candidate_contexts": contexts_payload,
-        "output_contract": contract,
-    }
-    instructions = textwrap.dedent(
-        """
-        CRITICAL: You MUST respond with ONLY valid JSON matching the output_contract below.
-        Do NOT include markdown, explanations, or any text outside the JSON structure.
-        Do NOT wrap the JSON in ```json blocks.
-
-        You are the fast, cheap *filtering* stage of an autonomous spaced-repetition agent.
-
-        ## Your Goal
-
-        Quickly decide which candidate contexts are worth sending to a slower, more
-        expensive card-generation model.
-
-        Focus on:
-        - Educational value (clear concepts, stable knowledge)
-        - Clarity and structure (good explanations, examples, lists)
-        - Non-trivial content (avoid obvious, shallow, or throwaway exchanges)
-
-        You DO NOT generate cards here.
-
-        ## For Each `candidate_context`
-
-        1. Decide if it contains learning-worthy content that would likely result in
-           at least one good flashcard.
-        2. Set `keep = true` if it should be passed to the card-generation stage,
-           otherwise `keep = false`.
-        3. Provide a short `reason` (e.g., "clear definition of X", "too trivial",
-           "highly procedural, not ideal for SRS").
-
-        ## Output Requirements
-
-        Return ONLY valid JSON adhering to `output_contract`. Critical rules:
-        - NO markdown fencing (no ```json blocks)
-        - NO explanatory text before or after the JSON
-        - NO comments inside the JSON
-        - START your response with `{` and END with `}`
-
-        YOUR ENTIRE RESPONSE MUST BE VALID, PARSEABLE JSON.
-        """
-    ).strip()
-    return instructions + "\n\n" + json.dumps(payload, indent=2, ensure_ascii=False)
-
-
-def run_codex_exec(
-    prompt: str,
-    chunk_idx: int,
-    run_dir: Path,
-    args: argparse.Namespace,
-    *,
-    model_override: Optional[str] = None,
-    reasoning_override: Optional[str] = None,
-    label: str = "",
-) -> str:
-    prompt_path = run_dir / f"prompt{label}_chunk_{chunk_idx:02d}.txt"
-    prompt_path.write_text(prompt)
-    last_msg_path = run_dir / f"codex{label}_response_chunk_{chunk_idx:02d}.json"
-
-    # Build command
-    cmd = ["codex", "exec", "-", "--skip-git-repo-check"]
-    model = model_override or args.codex_model or "gpt-5.1"
-    cmd.extend(["--model", model])
-    reasoning = reasoning_override or args.model_reasoning_effort
-    if reasoning:
-        cmd.extend(["-c", f"model_reasoning_effort={reasoning}"])
-
-    for extra in args.codex_extra_arg:
-        if extra:
-            cmd.extend(shlex.split(extra))
-    cmd.extend(["--output-last-message", str(last_msg_path)])
-    proc = subprocess.run(
-        cmd,
-        input=prompt,
-        text=True,
-        capture_output=True,
-        cwd=os.getcwd(),
-    )
-    (run_dir / f"codex{label}_stdout_chunk_{chunk_idx:02d}.log").write_text(proc.stdout)
-    (run_dir / f"codex{label}_stderr_chunk_{chunk_idx:02d}.log").write_text(proc.stderr)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"codex exec failed for chunk {chunk_idx} with exit code {proc.returncode}"
-        )
-    return last_msg_path.read_text().strip()
-
-
-def parse_codex_response_robust(
-    response_text: str,
-    chunk_idx: int,
-    run_dir: Path,
-    verbose: bool = False,
-    label: str = "",
-) -> Optional[Dict[str, Any]]:
-    """
-    Parse codex JSON response with multiple fallback strategies.
-    Returns None if all strategies fail.
-    """
-    # Save raw response
-    raw_path = run_dir / f"codex{label}_raw_response_chunk_{chunk_idx:02d}.txt"
-    raw_path.write_text(response_text)
-
-    strategies = []
-
-    # Strategy 1: Direct parse
-    strategies.append(("Direct parse", response_text.strip()))
-
-    # Strategy 2: Strip markdown fences
-    cleaned = response_text.strip()
-    if cleaned.startswith("```json"):
-        cleaned = cleaned[7:]
-    elif cleaned.startswith("```"):
-        cleaned = cleaned[3:]
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3]
-    cleaned = cleaned.strip()
-    strategies.append(("Markdown stripped", cleaned))
-
-    # Strategy 3: Use json-repair library
-    try:
-        repaired = repair_json(cleaned)
-        strategies.append(("JSON repair", repaired))
-    except Exception:
-        pass  # json-repair failed, skip this strategy
-
-    # Try each strategy
-    for strategy_name, text in strategies:
-        try:
-            result = json.loads(text)
-            if verbose:
-                print(f"  ✓ Parsed with strategy: {strategy_name}")
-            # Save the working version
-            (run_dir / f"codex{label}_parsed_response_chunk_{chunk_idx:02d}.json").write_text(
-                json.dumps(result, indent=2)
-            )
-            return result
-        except json.JSONDecodeError as e:
-            if verbose:
-                print(f"  ✗ {strategy_name} failed: {e}")
-            continue
-
-    # All strategies failed - save debug info
-    error_file = run_dir / f"codex{label}_FAILED_chunk_{chunk_idx:02d}.txt"
-    error_info = f"""All JSON parsing strategies failed for chunk {chunk_idx}
-
-Strategies tried:
-{chr(10).join(f'- {name}' for name, _ in strategies)}
-
-First 1000 chars of response:
-{response_text[:1000]}
-
-Last error: {e if 'e' in locals() else 'Unknown'}
-"""
-    error_file.write_text(error_info)
-
-    return None
-
-
 def ensure_run_dir(base_dir: Path) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = base_dir / f"run-{timestamp}"
@@ -1512,13 +309,63 @@ def ensure_run_dir(base_dir: Path) -> Path:
 
 
 def main() -> None:
+    # CLI args + optional config file
     args = parse_args()
-    deck_glob = args.deck_glob or str(SCRIPT_DIR / "*.html")
-    state_path = Path(args.state_file) if args.state_file else SCRIPT_DIR / ".auto_anki_agent_state.json"
-    output_dir = Path(args.output_dir) if args.output_dir else SCRIPT_DIR / "auto_anki_runs"
-    cache_dir = Path(args.cache_dir) if args.cache_dir else SCRIPT_DIR / ".deck_cache"
+    config, config_path = _load_config()
+    config_root = config_path.parent if config_path else None
 
-    chat_root = Path(args.chat_root).expanduser()
+    def resolve_path(value: Optional[str], default: Path) -> Path:
+        if not value:
+            return default
+        path = Path(value).expanduser()
+        if not path.is_absolute() and config_root is not None:
+            path = config_root / path
+        return path
+
+    # Paths (CLI overrides config; config overrides hardcoded defaults)
+    # Deck glob is a pattern, so we handle it separately from plain paths.
+    if args.deck_glob:
+        deck_glob = args.deck_glob
+    elif "deck_glob" in config:
+        pattern = str(config["deck_glob"])
+        if config_root is not None and not os.path.isabs(pattern):
+            deck_glob = str((config_root / pattern))
+        else:
+            deck_glob = pattern
+    else:
+        # If a config file exists but didn't specify deck_glob, default to
+        # "*.html" in the config directory; otherwise fall back to SCRIPT_DIR.
+        base = config_root or SCRIPT_DIR
+        deck_glob = str(base / "*.html")
+    state_path = (
+        Path(args.state_file).expanduser()
+        if args.state_file
+        else resolve_path(
+            config.get("state_file"),
+            SCRIPT_DIR / ".auto_anki_agent_state.json",
+        )
+    )
+    output_dir = (
+        Path(args.output_dir).expanduser()
+        if args.output_dir
+        else resolve_path(
+            config.get("output_dir"),
+            SCRIPT_DIR / "auto_anki_runs",
+        )
+    )
+    cache_dir = (
+        Path(args.cache_dir).expanduser()
+        if args.cache_dir
+        else resolve_path(
+            config.get("cache_dir"),
+            SCRIPT_DIR / ".deck_cache",
+        )
+    )
+
+    chat_root_str = args.chat_root
+    if not args.chat_root and config.get("chat_root"):
+        chat_root_str = config["chat_root"]
+    chat_root = Path(chat_root_str).expanduser()
     if not chat_root.exists():
         raise SystemExit(f"Chat root {chat_root} does not exist.")
 

@@ -46,7 +46,7 @@ python3 auto_anki_agent.py --date-range 2025-10 --max-contexts 5 --dry-run
 ```bash
 python3 auto_anki_agent.py \
   --unprocessed-only \
-  --codex-model gpt-5-codex \
+  --codex-model gpt-5.1 \
   --verbose
 ```
 
@@ -64,6 +64,26 @@ python3 auto_anki_agent.py --date-range 2025-10 --verbose
 - **JSON cards**: `auto_anki_runs/run-TIMESTAMP/all_proposed_cards.json`
 - **Run artifacts**: `auto_anki_runs/run-TIMESTAMP/`
 - **State file**: `.auto_anki_agent_state.json`
+
+## Optional Configuration (`auto_anki_config.json`)
+
+To avoid repeating long command lines, you can create an `auto_anki_config.json` file:
+
+- Search order:
+  - `AUTO_ANKI_CONFIG` env var (if set)
+  - `./auto_anki_config.json` in the current directory
+  - `~/.auto_anki_config.json` in your home directory
+- CLI flags override anything in the config.
+- Relative paths are resolved relative to the config file.
+
+Minimal example:
+
+```json
+{
+  "chat_root": "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/chatgpt",
+  "deck_glob": "*.html"
+}
+```
 
 ## Troubleshooting
 

@@ -205,6 +205,9 @@ python3 auto_anki_agent.py --dedup-method string --verbose
 
 # Adjust semantic threshold (default 0.85 = 85% similarity)
 python3 auto_anki_agent.py --semantic-similarity-threshold 0.90 --verbose
+
+# Use the installed console script (equivalent to calling auto_anki_agent.py)
+auto-anki --unprocessed-only --verbose
 ```
 
 **Why hybrid mode (default)?**

@@ -204,20 +204,31 @@ Generates human-readable card preview.
 ## File Organization
 
     auto-anki-generator/
-    ├── auto_anki_agent.py           # Main script (1200+ lines)
+    ├── auto_anki_agent.py           # Legacy CLI script (now mostly orchestration)
+    ├── auto_anki/                   # Core Python package
+    │   ├── __init__.py              # Package entry
+    │   ├── cli.py                   # `auto-anki` console script entrypoint
+    │   ├── cards.py                 # Card dataclass, HTML parsing, deck caching
+    │   ├── contexts.py              # Chat harvesting, scoring, ChatTurn
+    │   ├── dedup.py                 # String + semantic dedup (FAISS/embeddings)
+    │   ├── codex.py                 # Prompt builders, two-stage pipeline, parsing
+    │   └── state.py                 # StateTracker, run directory helpers
     ├── anki_review_ui.py            # Interactive review UI (Shiny app, 1050+ lines)
     ├── anki_connect.py              # AnkiConnect HTTP client (437 lines)
     ├── launch_ui.sh                 # Launch script for review UI
     ├── CLAUDE.md                    # This file
-    ├── README_AUTO_ANKI.md          # User documentation
-    ├── UI_README.md                 # Interactive UI documentation
-    ├── ANKICONNECT_GUIDE.md         # AnkiConnect setup and workflows
-    ├── UI_ENHANCEMENTS_SUMMARY.md   # UI enhancement technical details
-    ├── INTEGRATION_COMPLETE.md      # AnkiConnect integration summary
-    ├── QUICK_START.md               # Quick reference
-    ├── INSTALL.md                   # Setup instructions
-    ├── FUTURE_DIRECTIONS.md         # Roadmap (comprehensive!)
-    ├── pyproject.toml               # uv project config
+    ├── docs/                        # User & technical documentation
+    │   ├── README_AUTO_ANKI.md      # User documentation
+    │   ├── UI_README.md             # Interactive UI documentation
+    │   ├── ANKICONNECT_GUIDE.md     # AnkiConnect setup and workflows
+    │   ├── UI_ENHANCEMENTS_SUMMARY.md
+    │   ├── INTEGRATION_COMPLETE.md
+    │   ├── QUICK_START.md
+    │   ├── INSTALL.md
+    │   ├── START_HERE.md
+    │   ├── PROJECT_STATUS.md
+    │   └── FUTURE_DIRECTIONS.md     # Roadmap (comprehensive!)
+    ├── pyproject.toml               # uv project config (defines `auto-anki` script)
     ├── uv.lock                      # Dependency lock
     ├── .auto_anki_agent_state.json  # Runtime state (git-ignored)
     └── auto_anki_runs/              # Output directory
@@ -237,9 +248,11 @@ Generates human-readable card preview.
 **What to read first:**
 
 1.  This file (CLAUDE.md) - architecture overview
-2.  `auto_anki_agent.py` lines 1-150 - core data structures
-3.  `detect_signals()` function - scoring logic
-4.  `build_codex_prompt()` function - LLM interface
+2.  `auto_anki/cards.py` - `Card`, HTML parsing, deck caching
+3.  `auto_anki/contexts.py` - `ChatTurn`, `detect_signals()`, harvesting logic
+4.  `auto_anki/dedup.py` - `SemanticCardIndex`, `prune_contexts()`
+5.  `auto_anki/codex.py` - `build_codex_prompt()`, `run_codex_pipeline()`
+6.  `auto_anki/state.py` - `StateTracker`, `ensure_run_dir()`
 
 **Key configuration points (via CLI defaults):**
 
