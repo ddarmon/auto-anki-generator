@@ -213,10 +213,33 @@ rm .auto_anki_agent_state.json
 └──────────────────┘
 ```
 
+## Interactive Review UI ✨ NEW!
+
+Review and manage proposed cards with a visual web interface:
+
+```bash
+# Install UI dependencies (one time)
+uv pip install -e ".[ui]"
+
+# Launch the review UI
+./launch_ui.sh
+# or
+shiny run anki_review_ui.py
+```
+
+Features:
+- ✓ **Card-by-card review** with accept/reject/edit/skip actions
+- ✓ **Source context** display showing original conversations
+- ✓ **Quality signals** and confidence scores
+- ✓ **Progress tracking** with real-time statistics
+- ✓ **Export accepted cards** to JSON for import
+
+See `UI_README.md` for complete documentation.
+
 ## Future Enhancements
 
-- [ ] Automatic HTML card import
+- [ ] Automatic HTML card import via AnkiConnect
 - [ ] Tag taxonomy management
-- [ ] Confidence-based filtering
-- [ ] Multi-deck routing logic
-- [ ] Progress dashboard
+- [ ] Semantic deduplication with embeddings
+- [ ] Multi-deck routing logic with ML
+- [ ] Topic distribution visualization

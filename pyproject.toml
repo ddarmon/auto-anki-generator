@@ -17,3 +17,10 @@ build-backend = "hatchling.build"
 
 [tool.uv]
 dev-dependencies = []
+
+[project.optional-dependencies]
+ui = [
+    "shiny>=0.10.0",
+    "pandas>=2.0.0",
+    "plotly>=5.0.0",
+]
