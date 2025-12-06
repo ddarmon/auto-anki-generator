@@ -1,0 +1,110 @@
+# Auto Anki Agent - Quick Start
+
+## Daily Workflow
+
+### 1. Process New Conversations (Recommended)
+
+```bash
+cd ~/Dropbox/Reference/L/llms/aianki/collections
+python3 auto_anki_agent.py --unprocessed-only --verbose
+```
+
+This will:
+- ✅ Only process conversations not yet in state file
+- ✅ Generate markdown output for review
+- ✅ Update state to prevent reprocessing
+- ✅ Show progress with verbose output
+
+### 2. Review Proposed Cards
+
+```bash
+cat auto_anki_runs/proposed_cards_$(date +%Y-%m-%d).md | less
+```
+
+Or open in your text editor to review and select cards to import.
+
+### 3. Import Selected Cards to Anki
+
+Manually copy/paste cards you want to keep from the markdown file into your Anki HTML collections or import dialog.
+
+## Common Commands
+
+### Process Specific Month
+
+```bash
+python3 auto_anki_agent.py --date-range 2025-10 --verbose
+```
+
+### Dry Run (Preview Only)
+
+```bash
+python3 auto_anki_agent.py --date-range 2025-10 --max-contexts 5 --dry-run
+```
+
+### Process with Custom Model
+
+```bash
+python3 auto_anki_agent.py \
+  --unprocessed-only \
+  --codex-model gpt-5-codex \
+  --verbose
+```
+
+### Force Reprocess Everything in October
+
+```bash
+# First, back up and clear state
+cp .auto_anki_agent_state.json .auto_anki_agent_state.json.backup
+python3 auto_anki_agent.py --date-range 2025-10 --verbose
+```
+
+## Output Locations
+
+- **Markdown cards**: `auto_anki_runs/proposed_cards_YYYY-MM-DD.md`
+- **JSON cards**: `auto_anki_runs/run-TIMESTAMP/all_proposed_cards.json`
+- **Run artifacts**: `auto_anki_runs/run-TIMESTAMP/`
+- **State file**: `.auto_anki_agent_state.json`
+
+## Troubleshooting
+
+**No contexts found?**
+- Check date range: `--date-range 2025-10`
+- Check if already processed: remove state file or don't use `--unprocessed-only`
+
+**Too many/few cards?**
+- Adjust scoring: `--min-score 1.5` (higher = more selective)
+- Adjust similarity: `--similarity-threshold 0.9` (higher = less dedup)
+
+**Want to test without API calls?**
+```bash
+python3 auto_anki_agent.py --dry-run --max-contexts 3 --verbose
+```
+
+## What Gets Scored Highly?
+
+The script looks for conversations with:
+- ❓ Questions (starts with what/why/how/when)
+- 📚 Definitions ("stands for", "is defined as", "refers to")
+- 📝 Bullet points and lists
+- 💻 Code blocks
+- 📊 Structured content (headings)
+- ✍️ Medium-length answers (80-2200 chars)
+
+## File Structure
+
+```
+collections/
+├── auto_anki_agent.py          # Main script
+├── README_AUTO_ANKI.md         # Full documentation
+├── QUICK_START.md              # This file
+├── .auto_anki_agent_state.json # Processing state
+├── Research_Learning.html      # Existing cards
+├── Technology_Learning.html    # Existing cards
+├── Moody_s_Learning.html       # Existing cards
+└── auto_anki_runs/            # Generated outputs
+    ├── proposed_cards_2025-11-08.md
+    └── run-20251108-125440/
+        ├── all_proposed_cards.json
+        ├── selected_contexts.json
+        └── ...
+```
