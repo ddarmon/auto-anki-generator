@@ -15,13 +15,18 @@ Or with uv:
     uv run --with shiny --with pandas --with plotly shiny run anki_review_ui.py
 """
 
-from pathlib import Path
 import json
-from typing import Dict, List, Optional
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import argparse
+import textwrap
 
 from shiny import App, Inputs, Outputs, Session, reactive, render, ui
 import pandas as pd
+
+from auto_anki.codex import parse_codex_response_robust, run_codex_exec
 
 # Import AnkiConnect client
 try:
@@ -405,7 +410,7 @@ app_ui = ui.page_fluid(
 
                 # Edit Panel (conditional)
                 ui.panel_conditional(
-                    "input.btn_edit % 2 == 1",
+                    "input.btn_edit % 2 == 1 || input.btn_codex_update > 0",
                     ui.div(
                         {"class": "stats-card", "style": "margin-top: 15px;"},
                         ui.h4("Edit Card"),
@@ -414,6 +419,26 @@ app_ui = ui.page_fluid(
                         ui.input_text("edit_tags", "Tags (comma-separated):", width="100%"),
                         ui.input_action_button("btn_save_edit", "Save Changes", class_="btn-primary"),
                     )
+                ),
+
+                ui.div(
+                    {"class": "stats-card", "style": "margin-top: 15px;"},
+                    ui.h4("Codex Update"),
+                    ui.input_text_area(
+                        "codex_instructions",
+                        "Instructions for Codex (optional):",
+                        rows=3,
+                        width="100%",
+                    ),
+                    ui.input_action_button(
+                        "btn_codex_update",
+                        "🤖 Suggest Update via Codex",
+                        class_="btn-outline-primary",
+                    ),
+                    ui.div(
+                        {"style": "margin-top: 10px; font-size: 0.9em;"},
+                        ui.output_text("codex_message", inline=True),
+                    ),
                 ),
 
                 # Source Context Display
@@ -524,11 +549,104 @@ app_ui = ui.page_fluid(
 # Shiny Server Logic
 # ============================================================================
 
+def build_codex_update_prompt(
+    card: Dict,
+    context: Optional[Dict],
+    user_instructions: Optional[str] = None,
+) -> str:
+    """
+    Build a focused prompt asking Codex to refine a single card.
+
+    The model must respond with JSON only, matching the output_contract.
+    """
+    contract = {
+        "updated_card": {
+            "front": "string",
+            "back": "string",
+            "tags": ["list", "of", "tags"],
+            "keep": "boolean (true if this card should remain in the deck; false if it should be discarded)",
+            "notes": "short explanation of changes or issues",
+        }
+    }
+
+    payload: Dict[str, object] = {
+        "current_card": {
+            "deck": card.get("deck"),
+            "front": card.get("front"),
+            "back": card.get("back"),
+            "tags": card.get("tags", []),
+            "confidence": card.get("confidence"),
+            "notes": card.get("notes"),
+        },
+        "output_contract": contract,
+    }
+
+    if user_instructions:
+        payload["user_instructions"] = user_instructions
+
+    if context:
+        payload["source_context"] = {
+            "context_id": context.get("context_id"),
+            "source_path": context.get("source_path"),
+            "source_title": context.get("source_title"),
+            "source_url": context.get("source_url"),
+            "user_prompt": context.get("user_prompt"),
+            "assistant_answer": context.get("assistant_answer"),
+            "score": context.get("score"),
+            "signals": context.get("signals"),
+            "key_terms": context.get("key_terms"),
+            "key_points": context.get("key_points"),
+        }
+
+    instructions = textwrap.dedent(
+        """
+        CRITICAL: You MUST respond with ONLY valid JSON matching the `output_contract` below.
+        Do NOT include markdown, prose, or any text outside the JSON object.
+        Do NOT wrap the JSON in ```json fences.
+
+        You are helping a human refine a single Anki flashcard that was originally
+        generated from a ChatGPT conversation. Your goals:
+
+        1. Apply the Minimum Information Principle:
+           - Each card should test one small, well-scoped fact or concept.
+           - The question (front) must be clear and unambiguous.
+           - The answer (back) must be as short as possible while still complete.
+        2. Improve clarity, correctness, and usefulness.
+        3. Preserve the learner's intent and technical accuracy.
+
+        A human reviewer may also provide `user_instructions` describing exactly
+        how they want this card changed (for example: "convert to cloze", "shorten
+        the back to one sentence", or "flip front/back so question is X").
+        When `user_instructions` is present in the payload, you MUST treat it as
+        the primary source of guidance and follow it as closely as possible, while
+        still maintaining correctness and clarity.
+
+        Given the `current_card` and optional `source_context`, you should:
+        - Fix wording, grammar, and structure.
+        - Tighten or simplify the question.
+        - Shorten overly long answers while keeping key information.
+        - Adjust tags if helpful.
+        - Set `keep = false` only if the card is fundamentally unsalvageable
+          (e.g., redundant, trivial, or inherently confusing).
+
+        Output requirements:
+        - Return a single JSON object.
+        - Top-level key MUST be `updated_card`.
+        - Provide `front`, `back`, `tags`, `keep`, and `notes`.
+        - `tags` should be a list of short strings.
+        - START your response with `{` and END with `}`.
+        """
+    ).strip()
+
+    return instructions + "\n\n" + json.dumps(payload, indent=2, ensure_ascii=False)
+
+
 def server(input: Inputs, output: Outputs, session: Session):
     # Reactive values
     session_state = reactive.Value(None)
     current_card_index = reactive.Value(0)
     force_update = reactive.Value(0)
+    codex_msg = reactive.Value("")
 
     # AnkiConnect client (initialized once)
     anki_client = AnkiConnectClient() if ANKI_CONNECT_AVAILABLE else None
@@ -659,6 +777,12 @@ def server(input: Inputs, output: Outputs, session: Session):
     def card_notes():
         card = get_current_card()
         return card.get('notes', 'No notes') if card else ""
+
+    # Codex update status
+    @output
+    @render.text
+    def codex_message():
+        return codex_msg.get()
 
     # Context display
     @output
@@ -852,6 +976,79 @@ def server(input: Inputs, output: Outputs, session: Session):
             target = input.jump_to() - 1  # Convert to 0-indexed
             if 0 <= target < len(session.cards):
                 current_card_index.set(target)
+
+    # Codex-powered update of current card
+    @reactive.Effect
+    @reactive.event(input.btn_codex_update)
+    def _():
+        session = session_state.get()
+        card = get_current_card()
+
+        if not session or not card:
+            codex_msg.set("✗ No card loaded to update.")
+            return
+
+        context = session.get_context(card)
+        user_instructions = input.codex_instructions() or ""
+        codex_msg.set("⏳ Asking Codex (gpt-5.1, low) to refine this card...")
+
+        try:
+            prompt = build_codex_update_prompt(card, context, user_instructions.strip() or None)
+
+            # Minimal args namespace for run_codex_exec
+            args_ns = argparse.Namespace(
+                codex_model=None,
+                model_reasoning_effort=None,
+                codex_extra_arg=[],
+            )
+
+            run_dir = session.run_dir if isinstance(session.run_dir, Path) else Path(session.run_dir)
+
+            response_text = run_codex_exec(
+                prompt,
+                chunk_idx=0,
+                run_dir=run_dir,
+                args=args_ns,
+                model_override="gpt-5.1",
+                reasoning_override="low",
+                label="_edit",
+            )
+
+            response_json = parse_codex_response_robust(
+                response_text,
+                chunk_idx=0,
+                run_dir=run_dir,
+                verbose=False,
+                label="_edit",
+            )
+
+            if not response_json or "updated_card" not in response_json:
+                codex_msg.set("⚠ Codex did not return a valid `updated_card` payload.")
+                return
+
+            updated = response_json.get("updated_card") or {}
+
+            new_front = updated.get("front", card.get("front", ""))
+            new_back = updated.get("back", card.get("back", ""))
+            raw_tags = updated.get("tags", card.get("tags", []))
+
+            if isinstance(raw_tags, str):
+                tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
+            elif isinstance(raw_tags, list):
+                tags_list = [str(t).strip() for t in raw_tags if str(t).strip()]
+            else:
+                tags_list = card.get("tags", []) or []
+
+            ui.update_text_area("edit_front", value=new_front)
+            ui.update_text_area("edit_back", value=new_back)
+            ui.update_text("edit_tags", value=", ".join(tags_list))
+
+            codex_msg.set("✓ Codex suggestion applied. Review and click 'Save Changes' to accept.")
+
+        except FileNotFoundError:
+            codex_msg.set("✗ `codex` CLI not found. Ensure codex-cli is installed and on your PATH.")
+        except Exception as e:
+            codex_msg.set(f"✗ Codex error: {str(e)[:80]}")
 
     # Edit functionality
     @reactive.Effect

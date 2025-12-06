@@ -42,6 +42,7 @@ A complete interactive web UI for reviewing Auto Anki Agent proposed cards, impl
 - ✗ **Reject** - Mark card as bad, move to next
 - ✎ **Edit** - Modify front/back/tags inline
 - ⊙ **Skip** - Defer decision, move to next
+- 🤖 **Codex Update** - Ask codex-cli to propose a revised version of the current card based on your instructions
 
 **Navigation:**
 - Next/Previous buttons
@@ -66,6 +67,21 @@ A complete interactive web UI for reviewing Auto Anki Agent proposed cards, impl
 - Context ID for traceability
 - Card style (basic, cloze, etc.)
 - Generation timestamp
+
+**Codex-Guided Edits:**
+- UI surfaces an instruction box for the reviewer (e.g., "convert to cloze", "shorten answer", "flip front/back").
+- Server builds a focused JSON-only prompt (`build_codex_update_prompt`) that includes:
+  - The current card (deck, front, back, tags, confidence, notes)
+  - The original source context (user prompt, assistant answer, metadata, signals)
+  - Optional `user_instructions` from the UI
+- The prompt is sent through the existing codex-cli integration (`run_codex_exec`) with:
+  - Model override: `gpt-5.1`
+  - Reasoning effort override: `"low"`
+- The JSON response is parsed via `parse_codex_response_robust` and mapped into:
+  - Updated front/back text
+  - Updated tags
+  - A `keep` flag and `notes` field (used for future extensions)
+- Suggested values are written into the existing edit fields; the user must click **Save Changes** to persist the edit decision.
 
 ### ✅ Progress Dashboard & Observability (FUTURE_DIRECTIONS.md §13)
 
@@ -191,10 +207,10 @@ shiny run anki_review_ui.py
 | Session statistics | Yes | ✅ | Real-time stats |
 | Action breakdown | Yes | ✅ | Color-coded counts |
 | **Terminal UI** | §11 | ⚠️ | Web UI instead |
-| Keyboard shortcuts | Yes | ❌ | Not yet |
+| Keyboard shortcuts | Yes | ✅ | Implemented (A/R/E/S, arrows) |
 | **Filtering** | §13 | ⏳ | Partial |
-| Filter by deck | Yes | ⏳ | UI only, not functional |
-| Filter by confidence | Yes | ⏳ | UI only, not functional |
+| Filter by deck | Yes | ✅ | Functional |
+| Filter by confidence | Yes | ✅ | Functional |
 | **Visualizations** | §13 | ❌ | Not yet |
 | Topic distribution | Yes | ❌ | Planned (plotly) |
 | Cost tracking | Yes | ❌ | Planned |

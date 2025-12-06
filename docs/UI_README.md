@@ -24,6 +24,12 @@ This implements the **Interactive Review Mode** from `FUTURE_DIRECTIONS.md` (sec
 - **Action breakdown** - count of accepted/rejected/edited/skipped cards
 - **Real-time updates** - stats update as you review
 
+### Codex-Powered Card Updates ✅ NEW!
+- **Inline Codex integration** - call `codex exec` directly from the UI
+- **Model defaults** - uses `gpt-5.1` with low reasoning effort by default
+- **Instruction-driven updates** - you tell Codex how to change the current card
+- **Safe application** - suggestions populate the edit fields; you choose whether to save
+
 ### Export Functionality
 - **Export accepted cards** - generate JSON file with only accepted/edited cards
 - **Timestamp tracking** - know when decisions were made
@@ -80,6 +86,28 @@ The app will automatically open in your browser at `http://localhost:8000`.
    - **Skip** ⊙ - Mark for later review, move to next
 4. **Navigate** - Use Next/Previous or Jump to specific card
 5. **Export** - When done, export accepted cards to JSON
+
+### Using Codex to Update a Card ✅ NEW!
+
+You can ask Codex (via codex-cli) to rewrite or fix the *current* card, using both the card content and its original conversation context.
+
+1. Scroll to the **Codex Update** panel under the card.
+2. Optionally fill in **Instructions for Codex (optional)** with how you want the card changed, e.g.:
+   - `Shorten the answer to 1–2 sentences and emphasize intuition.`
+   - `Convert this to a cloze deletion using [...] around the key term.`
+   - `Flip front/back so the current answer becomes the question; make the new answer a concise definition.`
+3. Click **"🤖 Suggest Update via Codex"**.
+4. The app:
+   - Builds a structured JSON-only prompt with the current card, its context, and your instructions.
+   - Calls `codex exec` with `--model gpt-5.1` and low reasoning effort.
+   - Parses the JSON response and fills the **Edit Card** fields (`Front`, `Back`, `Tags`) with the suggested update.
+5. Review the suggested edits:
+   - If you like them, click **Save Changes** to record this card as **edited**.
+   - If not, you can tweak the fields manually, try different instructions, or ignore the suggestions.
+
+Notes:
+- Codex suggestions never overwrite your data automatically; they only pre-fill the editor.
+- If `codex` is not on your `PATH`, the UI will show an error in the Codex status line.
 
 ### Keyboard Shortcuts ✅ NEW!
 
