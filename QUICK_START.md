@@ -73,7 +73,10 @@ python3 auto_anki_agent.py --date-range 2025-10 --verbose
 
 **Too many/few cards?**
 - Adjust scoring: `--min-score 1.5` (higher = more selective)
-- Adjust similarity: `--similarity-threshold 0.9` (higher = less dedup)
+- Adjust similarity:
+  - String-based: `--similarity-threshold 0.9` (higher = less dedup)
+  - Semantic: use `--dedup-method semantic` or `hybrid` plus
+    `--semantic-similarity-threshold 0.9`
 
 **Want to test without API calls?**
 ```bash

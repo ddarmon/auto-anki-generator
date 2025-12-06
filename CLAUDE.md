@@ -161,12 +161,15 @@ Heuristic scoring function that identifies quality signals:
 
 Returns: `(total_score, signals_dict)`
 
-#### `deduplicate(contexts, cards, threshold) -> List[ChatTurn]`
+#### `deduplicate / prune_contexts(contexts, cards, args) -> List[ChatTurn]`
 
 Filters contexts that are too similar to existing cards.
 
--   Uses `SequenceMatcher.ratio()` for string similarity
--   Default threshold: 0.82
+-   String-based dedup: `SequenceMatcher.ratio()` over normalized text
+-   Semantic dedup: optional SentenceTransformers embeddings via
+    `--dedup-method semantic` / `hybrid`
+-   String threshold: `--similarity-threshold` (default: 0.82)
+-   Semantic threshold: `--semantic-similarity-threshold` (default: 0.85)
 -   Helps avoid generating redundant cards
 
 #### `build_codex_prompt(cards, contexts, args) -> str`
@@ -238,12 +241,13 @@ Generates human-readable card preview.
 3.  `detect_signals()` function - scoring logic
 4.  `build_codex_prompt()` function - LLM interface
 
-**Key configuration points:**
+**Key configuration points (via CLI defaults):**
 
 -   `DEFAULT_MAX_CONTEXTS = 24` - contexts per run
 -   `DEFAULT_CONTEXTS_PER_RUN = 8` - batch size
 -   `DEFAULT_MIN_SCORE = 1.2` - quality threshold
--   `DEFAULT_SIMILARITY_THRESHOLD = 0.82` - dedup threshold
+-   `DEFAULT_SIMILARITY_THRESHOLD = 0.82` - string dedup threshold
+-   `DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD = 0.85` - semantic dedup threshold
 -   `DEFAULT_PER_FILE_LIMIT = 3` - max contexts per conversation
 
 ### Debugging a Run
@@ -263,7 +267,10 @@ Generates human-readable card preview.
     threshold
 -   "No cards generated" → LLM rejected all contexts (inspect codex
     response)
--   "Duplicate cards" → Lower similarity_threshold
+-   "Duplicate cards" →
+    -   For string-only runs: lower `--similarity-threshold`
+    -   For semantic runs: lower `--semantic-similarity-threshold` or
+        switch to `--dedup-method hybrid`
 -   "Low quality cards" → Raise min_score threshold
 
 ### Adding a New Heuristic Signal

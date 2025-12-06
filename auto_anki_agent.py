@@ -315,6 +315,26 @@ def parse_args() -> argparse.Namespace:
         help="Front/back similarity threshold vs existing cards for auto-deduping.",
     )
     parser.add_argument(
+        "--dedup-method",
+        choices=["string", "semantic", "hybrid"],
+        default="string",
+        help=(
+            "Deduplication method: 'string' uses lexical similarity only, "
+            "'semantic' uses embedding-based similarity, 'hybrid' uses both."
+        ),
+    )
+    parser.add_argument(
+        "--semantic-model",
+        default="all-MiniLM-L6-v2",
+        help="SentenceTransformers model to use for semantic deduplication (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--semantic-similarity-threshold",
+        type=float,
+        default=0.85,
+        help="Cosine similarity threshold for semantic deduplication (default: %(default)s).",
+    )
+    parser.add_argument(
         "--min-score",
         type=float,
         default=1.2,
@@ -373,6 +393,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-existing-cards must be positive.")
     if args.similarity_threshold <= 0 or args.similarity_threshold > 1:
         parser.error("--similarity-threshold must fall within (0, 1].")
+    if args.semantic_similarity_threshold <= 0 or args.semantic_similarity_threshold > 1:
+        parser.error("--semantic-similarity-threshold must fall within (0, 1].")
     if args.min_score < 0:
         parser.error("--min-score must be non-negative.")
     if args.max_chat_files <= 0:
@@ -691,6 +713,72 @@ def harvest_chat_contexts(
     return contexts
 
 
+class SemanticCardIndex:
+    """
+    Semantic index over existing cards using sentence-transformer embeddings.
+
+    This is used for semantic deduplication of contexts against existing deck
+    content. It is intentionally lightweight and instantiated once per run.
+    """
+
+    def __init__(
+        self,
+        cards: List[Card],
+        sentence_transformer_cls: Any,
+        np_module: Any,
+        model_name: str,
+        verbose: bool = False,
+    ) -> None:
+        self.cards = cards
+        self._np = np_module
+        self.model_name = model_name
+
+        if verbose:
+            print(f"Loading semantic dedup model '{model_name}'...")
+
+        self.model = sentence_transformer_cls(model_name)
+
+        # Build embeddings for all cards using front+back text
+        texts = [
+            (card.front + " " + card.back).strip()
+            for card in cards
+            if (card.front or card.back)
+        ]
+
+        if not texts:
+            # No cards – keep a trivial empty matrix
+            self.embeddings = np_module.zeros((0, 1), dtype="float32")
+            return
+
+        emb = self.model.encode(texts, convert_to_numpy=True)
+        emb = emb.astype("float32")
+        norms = np_module.linalg.norm(emb, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        self.embeddings = emb / norms
+
+    def is_duplicate(self, context: ChatTurn, threshold: float) -> bool:
+        """Return True if context is semantically close to any existing card."""
+        if self.embeddings.shape[0] == 0:
+            return False
+
+        np_module = self._np
+
+        text = (context.user_prompt + " " + context.assistant_answer).strip()
+        if not text:
+            return False
+
+        query_emb = self.model.encode([text], convert_to_numpy=True)
+        query_vec = query_emb[0].astype("float32")
+        norm = np_module.linalg.norm(query_vec)
+        if norm == 0:
+            return False
+        query_vec = query_vec / norm
+
+        scores = self.embeddings @ query_vec
+        max_score = float(scores.max())
+        return max_score >= threshold
+
+
 def quick_similarity(s1: str, s2: str) -> float:
     """Fast approximate similarity using set overlap of words."""
     if not s1 or not s2:
@@ -741,10 +829,48 @@ def prune_contexts(
     pruned: List[ChatTurn] = []
     total = len(contexts)
 
+    semantic_index: Optional[SemanticCardIndex] = None
+    if args.dedup_method in ("semantic", "hybrid"):
+        try:
+            from sentence_transformers import SentenceTransformer  # type: ignore
+            import numpy as _np  # type: ignore
+        except ImportError as exc:
+            raise SystemExit(
+                "Semantic deduplication requires the 'sentence-transformers' and 'numpy' packages.\n"
+                "Install them, for example:\n\n"
+                "  uv pip install -e '.[semantic]'\n"
+                "  # or\n"
+                "  pip install 'sentence-transformers' 'numpy'\n"
+            ) from exc
+
+        if args.verbose:
+            print("Building semantic index over existing cards for deduplication...")
+
+        semantic_index = SemanticCardIndex(
+            cards=cards,
+            sentence_transformer_cls=SentenceTransformer,
+            np_module=_np,
+            model_name=args.semantic_model,
+            verbose=args.verbose,
+        )
+
     for idx, context in enumerate(sorted(contexts, key=lambda c: c.score, reverse=True), 1):
         if args.verbose:
             print(f"  Checking context {idx}/{total} for duplicates...", end='\r')
-        if is_duplicate_context(context, cards, args.similarity_threshold):
+
+        is_dup = False
+
+        # String-based deduplication (current default behaviour)
+        if args.dedup_method in ("string", "hybrid"):
+            if is_duplicate_context(context, cards, args.similarity_threshold):
+                is_dup = True
+
+        # Semantic deduplication using embeddings
+        if not is_dup and semantic_index is not None:
+            if semantic_index.is_duplicate(context, args.semantic_similarity_threshold):
+                is_dup = True
+
+        if is_dup:
             continue
         pruned.append(context)
 

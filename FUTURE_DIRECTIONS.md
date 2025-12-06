@@ -52,15 +52,19 @@ with Pool(processes=8) as pool:
 **Current limitation**: String similarity (`SequenceMatcher`) misses
 semantically identical content phrased differently
 
-**Proposal**:
+**Status**: Initial implementation available via
+`--dedup-method semantic` or `--dedup-method hybrid`, using
+SentenceTransformers embeddings over existing cards. See
+`auto_anki_agent.py:SemanticCardIndex`.
 
--   Generate embeddings for all existing cards (front + back)
--   Store in FAISS or ChromaDB vector index
--   Use cosine similarity for semantic deduplication
--   Cache embeddings (invalidate on card modification)
+**Next steps**:
 
-**Impact**: Better duplicate detection, faster lookups (O(log n) vs
-O(n))
+-   Cache embeddings across runs for large decks
+-   Explore faster vector indices (e.g., FAISS/ChromaDB)
+-   Use embeddings for novelty scoring (underrepresented topics)
+
+**Impact**: Better duplicate detection, especially for paraphrased
+content; quality improvement scales with deck size.
 
 **Cost consideration**: \~\$0.0001 per card for OpenAI embeddings, or
 use local models (sentence-transformers)
