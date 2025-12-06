@@ -53,6 +53,10 @@ python3 auto_anki_agent.py \
 - `--output-dir PATH`: Where to save run artifacts
 - `--max-contexts N`: Maximum contexts to gather per run (default: 24)
 - `--contexts-per-run N`: Contexts per codex exec call (default: 8)
+- `--similarity-threshold FLOAT`: String-based similarity threshold for dedup (default: 0.82)
+- `--dedup-method {string,semantic,hybrid}`: Choose dedup strategy (default: string)
+- `--semantic-model NAME`: SentenceTransformers model for semantic dedup (default: all-MiniLM-L6-v2)
+- `--semantic-similarity-threshold FLOAT`: Cosine similarity threshold for semantic dedup (default: 0.85)
 - `--dry-run`: Build prompts without calling codex
 - `--verbose`: Print progress information
 - `--codex-model MODEL`: Override default codex model
@@ -152,7 +156,12 @@ python3 auto_anki_agent.py \
 2. **Use `--verbose`**: See what's happening under the hood
 3. **Review markdown output**: Easier to scan than JSON
 4. **Adjust scoring**: Use `--min-score` to filter more/less aggressively
-5. **Control deduplication**: Use `--similarity-threshold` to tune matching
+5. **Control deduplication**:
+   - Use `--similarity-threshold` to tune string-based matching
+   - Enable semantic dedup with `--dedup-method semantic` or `--dedup-method hybrid`
+   - Install semantic extras with:
+     - `uv pip install -e ".[semantic]"` or
+     - `pip install sentence-transformers numpy`
 6. **Process incrementally**: Use `--unprocessed-only` for daily runs
 
 ## Troubleshooting
