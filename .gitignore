@@ -1,3 +1,7 @@
 __pycache__
 
 .auto_anki_agent_state.json
+
+.deck_cache/
+worktrees/
+*.html

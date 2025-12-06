@@ -51,6 +51,7 @@ python3 auto_anki_agent.py \
 - `--deck-glob PATTERN`: Glob pattern for HTML deck files
 - `--state-file PATH`: Custom state file location
 - `--output-dir PATH`: Where to save run artifacts
+- `--cache-dir PATH`: Directory for parsed deck + semantic embedding cache (default: .deck_cache next to script)
 - `--max-contexts N`: Maximum contexts to gather per run (default: 24)
 - `--contexts-per-run N`: Contexts per codex exec call (default: 8)
 - `--similarity-threshold FLOAT`: String-based similarity threshold for dedup (default: 0.82)
@@ -160,9 +161,10 @@ python3 auto_anki_agent.py \
    - **Default**: Hybrid mode (semantic + string) - automatically falls back to string if dependencies unavailable
    - Use `--similarity-threshold` to tune string-based matching (default: 0.82)
    - Use `--semantic-similarity-threshold` to tune semantic matching (default: 0.85)
+   - Semantic dedup uses FAISS IndexFlatIP with a persistent cache in `.deck_cache/embeddings/` (auto-invalidated when HTML decks change)
    - For best results, install semantic extras:
      - `uv pip install -e ".[semantic]"` or
-     - `pip install sentence-transformers numpy`
+     - `pip install sentence-transformers numpy faiss-cpu`
    - Force string-only mode: `--dedup-method string`
 6. **Process incrementally**: Use `--unprocessed-only` for daily runs
 
@@ -281,6 +283,6 @@ shiny run anki_review_ui.py
 
 - [x] ~~Automatic HTML card import via AnkiConnect~~ ✅ **DONE!**
 - [ ] Tag taxonomy management
-- [ ] Semantic deduplication with embeddings
+- [x] ~~Semantic deduplication with embeddings~~ ✅ **DONE!** (SentenceTransformers + FAISS vector cache)
 - [ ] Multi-deck routing logic with ML
 - [ ] Topic distribution visualization

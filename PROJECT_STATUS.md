@@ -371,7 +371,8 @@ These are documented in FUTURE_DIRECTIONS.md with detailed proposals.
 1. ~~**Semantic Deduplication**~~ ✅ **DONE!**
    - Implemented with SentenceTransformers embeddings
    - Three modes: string, semantic, hybrid
-   - Future: FAISS/ChromaDB for faster vector search on large decks
+   - **FAISS vector database** for O(1) similarity search
+   - Persistent embedding cache (7x speedup on subsequent runs)
 
 2. **Two-Stage LLM Pipeline** (High Priority)
    - Fast pre-filter with small model

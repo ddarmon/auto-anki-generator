@@ -1538,7 +1538,7 @@ for chunk in chunks:
 **Improve card quality**
 
 1.  [ ] Two-stage LLM pipeline (cost reduction)
-2.  [ ] Semantic deduplication with embeddings
+2.  [x] Semantic deduplication with embeddings (initial implementation using SentenceTransformers + FAISS-based vector cache)
 3.  [ ] Enhanced scoring heuristics
 4.  [ ] Quality validation & auto-fix
 5.  [ ] Configurable prompt templates
@@ -1654,7 +1654,7 @@ for chunk in chunks:
 The Auto Anki Agent has strong fundamentals but significant room for
 growth. The highest-leverage improvements are:
 
-1.  **Semantic deduplication** - Biggest quality improvement
+1.  ~~**Semantic deduplication**~~ ✅ **INITIAL IMPLEMENTATION COMPLETE** - Biggest quality improvement so far
 2.  **Interactive review** - Biggest UX improvement
 3.  **Two-stage pipeline** - Biggest cost/speed improvement
 4.  **AnkiConnect** - Biggest friction reduction

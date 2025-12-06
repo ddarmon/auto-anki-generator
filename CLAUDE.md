@@ -578,7 +578,7 @@ This project has **significant** planned enhancements documented in
 
 ### Highest Priority (from roadmap)
 
-1.  **Semantic deduplication** - Embeddings + FAISS/ChromaDB for better
+1.  ~~**Semantic deduplication**~~ ✅ **INITIAL IMPLEMENTATION** - Embeddings + FAISS vector cache for better
     duplicate detection
 2.  ~~**Interactive review mode**~~ ✅ **DONE!**
 3.  **Two-stage LLM pipeline** - Fast pre-filter + slow generation (70%

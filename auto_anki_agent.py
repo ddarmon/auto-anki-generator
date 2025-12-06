@@ -41,6 +41,12 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from bs4 import BeautifulSoup  # type: ignore
 from json_repair import repair_json
 
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except ImportError:
+    FAISS_AVAILABLE = False
+
 
 class DateRangeFilter:
     """Parse and apply date range filters to conversation file paths."""
@@ -226,6 +232,7 @@ class Card:
     data_search: str
     front_norm: str
     back_norm: str
+    source_path: Optional[Path] = None  # Track source HTML file for cache invalidation
 
 
 @dataclass
@@ -282,7 +289,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--cache-dir",
-        help="Directory to cache parsed HTML decks for faster loading (default: <script_dir>/.deck_cache).",
+        help=(
+            "Directory to cache parsed HTML decks and semantic embedding index "
+            "(default: <script_dir>/.deck_cache)."
+        ),
     )
     parser.add_argument(
         "--max-existing-cards",
@@ -428,6 +438,7 @@ def parse_html_deck(html_path: Path, cache_path: Optional[Path] = None) -> List[
                         data_search=c["data_search"],
                         front_norm=c["front_norm"],
                         back_norm=c["back_norm"],
+                        source_path=html_path,  # Track source for cache invalidation
                     )
                     for c in cache_data["cards"]
                 ]
@@ -464,6 +475,7 @@ def parse_html_deck(html_path: Path, cache_path: Optional[Path] = None) -> List[
                 data_search=data_search,
                 front_norm=normalize_text(front),
                 back_norm=normalize_text(back),
+                source_path=html_path,  # Track source for cache invalidation
             )
         )
 
@@ -471,7 +483,10 @@ def parse_html_deck(html_path: Path, cache_path: Optional[Path] = None) -> List[
     if cache_path:
         cache_data = {
             "html_mtime": html_path.stat().st_mtime,
-            "cards": [asdict(c) for c in cards]
+            "cards": [
+                {k: v for k, v in asdict(c).items() if k != "source_path"}
+                for c in cards
+            ]
         }
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache_data, indent=2))
@@ -719,7 +734,7 @@ class SemanticCardIndex:
     Semantic index over existing cards using sentence-transformer embeddings.
 
     This is used for semantic deduplication of contexts against existing deck
-    content. It is intentionally lightweight and instantiated once per run.
+    content. Uses FAISS for fast similarity search and caches embeddings to disk.
     """
 
     def __init__(
@@ -729,15 +744,31 @@ class SemanticCardIndex:
         np_module: Any,
         model_name: str,
         verbose: bool = False,
+        cache_dir: Optional[Path] = None,
     ) -> None:
         self.cards = cards
         self._np = np_module
         self.model_name = model_name
+        self.verbose = verbose
+        self.cache_dir = Path(cache_dir) if cache_dir else Path(".deck_cache")
+        self.cache_path = self.cache_dir / "embeddings" / "all_decks.faiss"
+        self.meta_path = self.cache_dir / "embeddings" / "all_decks.meta.json"
 
         if verbose:
             print(f"Loading semantic dedup model '{model_name}'...")
 
         self.model = sentence_transformer_cls(model_name)
+
+        # Try to load from cache first (if FAISS available)
+        if FAISS_AVAILABLE and self._load_cache(cards):
+            if verbose:
+                print(f"  ✓ Loaded embeddings from cache ({len(cards)} cards)")
+            return
+
+        # Cache miss or FAISS unavailable: generate embeddings
+        if verbose:
+            cache_reason = "FAISS not available" if not FAISS_AVAILABLE else "cache miss"
+            print(f"  Building semantic index ({len(cards)} cards, {cache_reason})...")
 
         # Build embeddings for all cards using front+back text
         texts = [
@@ -747,37 +778,148 @@ class SemanticCardIndex:
         ]
 
         if not texts:
-            # No cards – keep a trivial empty matrix
-            self.embeddings = np_module.zeros((0, 1), dtype="float32")
+            # No cards – keep a trivial empty index
+            if FAISS_AVAILABLE:
+                self.index = faiss.IndexFlatIP(384)  # 384 = all-MiniLM-L6-v2 dim
+            else:
+                self.embeddings = np_module.zeros((0, 1), dtype="float32")
             return
 
         emb = self.model.encode(texts, convert_to_numpy=True)
         emb = emb.astype("float32")
         norms = np_module.linalg.norm(emb, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
-        self.embeddings = emb / norms
+        emb_normalized = emb / norms
+
+        if FAISS_AVAILABLE:
+            self.index = self._build_faiss_index(emb_normalized)
+            self._save_cache(cards)
+        else:
+            # Fallback to NumPy
+            self.embeddings = emb_normalized
+
+    def _build_faiss_index(self, embeddings: Any) -> Any:
+        """Build FAISS IndexFlatIP for exact cosine similarity."""
+        embedding_dim = embeddings.shape[1]
+        index = faiss.IndexFlatIP(embedding_dim)
+        index.add(embeddings)
+        return index
+
+    def _load_cache(self, cards: List[Card]) -> bool:
+        """Load FAISS index from cache if valid."""
+        if not self.cache_path.exists() or not self.meta_path.exists():
+            return False
+
+        try:
+            # Load and validate metadata
+            meta = json.loads(self.meta_path.read_text())
+
+            if not self._is_cache_valid(meta, cards):
+                return False
+
+            # Load FAISS index
+            self.index = faiss.read_index(str(self.cache_path))
+            return True
+
+        except (json.JSONDecodeError, RuntimeError, Exception):
+            # Cache corrupted or incompatible
+            return False
+
+    def _is_cache_valid(self, meta: Dict[str, Any], cards: List[Card]) -> bool:
+        """Check if cached embeddings are still valid."""
+        # Check model name
+        if meta.get("model_name") != self.model_name:
+            return False
+
+        # Check card count
+        if meta.get("card_count") != len(cards):
+            return False
+
+        # Check deck file mtimes
+        current_deck_files = self._get_deck_mtimes(cards)
+        cached_deck_files = meta.get("deck_files", {})
+
+        if current_deck_files != cached_deck_files:
+            return False
+
+        return True
+
+    def _save_cache(self, cards: List[Card]) -> None:
+        """Save FAISS index and metadata to cache."""
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Save FAISS index
+            faiss.write_index(self.index, str(self.cache_path))
+
+            # Save metadata
+            meta = {
+                "model_name": self.model_name,
+                "deck_files": self._get_deck_mtimes(cards),
+                "card_count": len(cards),
+                "embedding_dim": self.index.d,
+                "created_at": datetime.now().isoformat(),
+                "faiss_index_type": "IndexFlatIP",
+            }
+            self.meta_path.write_text(json.dumps(meta, indent=2))
+
+        except Exception as e:
+            if self.verbose:
+                print(f"  Warning: Failed to save cache: {e}")
+
+    def _get_deck_mtimes(self, cards: List[Card]) -> Dict[str, float]:
+        """Get dict of deck file paths -> mtimes for cache invalidation."""
+        deck_files = {}
+        for card in cards:
+            if card.source_path and card.source_path.exists():
+                path = str(card.source_path)
+                if path not in deck_files:
+                    deck_files[path] = card.source_path.stat().st_mtime
+        return deck_files
 
     def is_duplicate(self, context: ChatTurn, threshold: float) -> bool:
         """Return True if context is semantically close to any existing card."""
-        if self.embeddings.shape[0] == 0:
-            return False
-
-        np_module = self._np
-
         text = (context.user_prompt + " " + context.assistant_answer).strip()
         if not text:
             return False
 
-        query_emb = self.model.encode([text], convert_to_numpy=True)
-        query_vec = query_emb[0].astype("float32")
-        norm = np_module.linalg.norm(query_vec)
-        if norm == 0:
-            return False
-        query_vec = query_vec / norm
+        if FAISS_AVAILABLE:
+            # FAISS-based search
+            if self.index.ntotal == 0:
+                return False
 
-        scores = self.embeddings @ query_vec
-        max_score = float(scores.max())
-        return max_score >= threshold
+            query_emb = self.model.encode([text], convert_to_numpy=True)
+            query_vec = query_emb[0].astype("float32")
+
+            # Normalize query vector
+            norm = self._np.linalg.norm(query_vec)
+            if norm == 0:
+                return False
+            query_vec = query_vec / norm
+
+            # FAISS search: get top-1 match
+            distances, indices = self.index.search(
+                query_vec.reshape(1, -1), k=1
+            )
+
+            max_similarity = distances[0][0]
+            return max_similarity >= threshold
+
+        else:
+            # NumPy fallback
+            if self.embeddings.shape[0] == 0:
+                return False
+
+            query_emb = self.model.encode([text], convert_to_numpy=True)
+            query_vec = query_emb[0].astype("float32")
+            norm = self._np.linalg.norm(query_vec)
+            if norm == 0:
+                return False
+            query_vec = query_vec / norm
+
+            scores = self.embeddings @ query_vec
+            max_score = float(scores.max())
+            return max_score >= threshold
 
 
 def quick_similarity(s1: str, s2: str) -> float:
@@ -845,12 +987,13 @@ def prune_contexts(
                 np_module=_np,
                 model_name=args.semantic_model,
                 verbose=args.verbose,
+                cache_dir=args.cache_dir,
             )
         except ImportError:
             # Fall back to string-based deduplication
             print("⚠ Semantic deduplication dependencies not found. Falling back to string-based deduplication.")
             print("  For better duplicate detection, install: uv pip install -e '.[semantic]'")
-            print("  or: pip install sentence-transformers numpy")
+            print("  or: pip install sentence-transformers numpy faiss-cpu")
             print()
 
     for idx, context in enumerate(sorted(contexts, key=lambda c: c.score, reverse=True), 1):
