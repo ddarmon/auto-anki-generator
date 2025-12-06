@@ -9,7 +9,7 @@ dependencies = [
 ]
 
 [project.scripts]
-auto-anki = "auto_anki_agent:main"
+auto-anki = "auto_anki.cli:main"
 
 [build-system]
 requires = ["hatchling"]

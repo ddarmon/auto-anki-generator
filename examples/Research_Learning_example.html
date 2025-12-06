@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research Learning</title>
+    <script>
+        MathJax = {
+            tex: {
+                inlineMath: [['\\(', '\\)']],
+                displayMath: [['\\[', '\\]']],
+                processEscapes: true,
+                processEnvironments: true
+            },
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+            }
+        };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" id="MathJax-script"></script>
+    <style>
+        body { font-family: sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: auto; }
+        .card-wrapper { margin-bottom: 35px; }
+        .card-wrapper[hidden] { display: none; }
+        .card { padding: 15px; border: 1px solid #ccc; border-radius: 8px; background-color: #f9f9f9; box-shadow: 2px 2px 5px rgba(0,0,0,0.1); overflow: hidden; }
+        .front { font-weight: bold; margin-bottom: 10px; font-size: 1.1em; }
+        .back { margin-top: 10px; }
+        .card-meta, .tags { font-size: 0.8em; color: grey; margin-top: 15px; border-top: 1px dashed #eee; padding-top: 5px; }
+        .card img { max-width: 100%; height: auto; display: block; margin-top: 10px; border-radius: 4px; }
+        mjx-container { overflow-x: auto; overflow-y: hidden; }
+        .search-toolbar { margin-bottom: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 8px; background-color: #fff; box-shadow: 1px 1px 4px rgba(0,0,0,0.08); }
+        .search-toolbar label { font-weight: 600; display: block; margin-bottom: 8px; }
+        .search-controls { display: flex; gap: 8px; }
+        .search-toolbar input[type="search"] { flex: 1; padding: 8px 10px; border-radius: 4px; border: 1px solid #bbb; font-size: 1em; }
+        .search-toolbar button { padding: 8px 12px; border: 1px solid #bbb; background-color: #f3f3f3; border-radius: 4px; cursor: pointer; }
+        .search-toolbar button:hover { background-color: #e7e7e7; }
+        .status-line { font-size: 0.9em; color: #555; margin-top: 10px; }
+        #no-matches { font-size: 0.95em; color: #a00; margin-bottom: 20px; }
+        .card-divider { border: 0; border-top: 1px solid #ddd; margin: 40px 0; }
+    </style>
+</head>
+<body>
+
+<h1>Research Learning</h1>
+
+<section class="search-toolbar" role="search" aria-label="Filter cards">
+    <label for="card-search-input">Filter cards by keyword</label>
+    <div class="search-controls">
+        <input id="card-search-input" type="search" placeholder="Type to filter..." autocomplete="off" spellcheck="false">
+        <button type="button" id="card-search-clear" aria-label="Clear search">Clear</button>
+    </div>
+    <p id="match-count" class="status-line"></p>
+</section>
+<p id="no-matches" hidden>No cards match your search.</p>
+
+<section class="card-wrapper" data-search="what does relu stand for? machine learning -- neural networks">
+    <div class="card">
+        <div class="front">What does ReLU stand for?</div>
+        <div class="back"><b>Re</b>ctified <b>L</b>inear <b>U</b>nit</div>
+        <div class="card-meta">machine learning -- neural networks</div>
+    </div>
+    <hr class="card-divider" aria-hidden="true">
+</section>
+
+<section class="card-wrapper" data-search="what is the relu activation function? machine learning -- neural networks">
+    <div class="card">
+        <div class="front">What is the ReLU activation function?</div>
+        <div class="back">f(x) = max(0, x)</div>
+        <div class="card-meta">machine learning -- neural networks</div>
+    </div>
+    <hr class="card-divider" aria-hidden="true">
+</section>
+
+<section class="card-wrapper" data-search="how can a multiple integral be expressed as an iterated integral? math -- multivariable calculus">
+    <div class="card">
+        <div class="front">How can a multiple integral over a region D be written as an iterated integral?</div>
+        <div class="back">By choosing an order of variables and writing each variable's bounds as functions of the previously integrated variables, e.g. nested integrals of the form int_{a1}^{b1} int_{a2(x1)}^{b2(x1)} ... int_{ad(x1,...,x_{d-1})}^{bd(x1,...,x_{d-1})} f(x1,...,xd) dx_d ... dx_2 dx_1.</div>
+        <div class="card-meta">math -- multivariable calculus</div>
+    </div>
+    <hr class="card-divider" aria-hidden="true">
+</section>
+
+</body>
+</html>

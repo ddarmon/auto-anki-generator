@@ -5,3 +5,4 @@ __pycache__
 .deck_cache/
 worktrees/
 *.html
+!examples/Research_Learning_example.html
