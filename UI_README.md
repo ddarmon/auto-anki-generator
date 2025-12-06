@@ -81,15 +81,22 @@ The app will automatically open in your browser at `http://localhost:8000`.
 4. **Navigate** - Use Next/Previous or Jump to specific card
 5. **Export** - When done, export accepted cards to JSON
 
-### Keyboard Shortcuts (Coming Soon)
+### Keyboard Shortcuts ✅ NEW!
 
-Planned shortcuts:
-- `a` - Accept
-- `r` - Reject
-- `e` - Edit
-- `s` - Skip
-- `→` - Next card
-- `←` - Previous card
+**Review Actions:**
+- `A` - Accept current card
+- `R` - Reject current card (shows reason dropdown)
+- `E` - Edit current card (opens editor)
+- `S` - Skip current card (defer decision)
+
+**Navigation:**
+- `→` (Right Arrow) - Next card
+- `←` (Left Arrow) - Previous card
+
+**Tips:**
+- Shortcuts work anywhere except when typing in input fields
+- Look for `[A]`, `[R]`, etc. hints next to buttons
+- Use arrows for quick navigation during review
 
 ## Output
 
@@ -141,20 +148,72 @@ Format:
 
 ## Advanced Usage
 
-### Filtering (Partial Implementation)
+### Filtering ✅ NEW!
 
-The UI includes placeholders for filtering:
-- **By Deck** - Show only cards for specific deck
-- **By Confidence** - Show only high-confidence cards
+**Filter by Deck:**
+1. Select deck from dropdown (e.g., "Technology Learning")
+2. Click "Apply Filters"
+3. Only cards from that deck will be shown
 
-These filters are implemented in the UI but not yet fully functional.
+**Filter by Confidence:**
+1. Drag slider to minimum confidence (e.g., 0.85 for 85%)
+2. Click "Apply Filters"
+3. Only cards above threshold will be shown
 
-### Bulk Operations (Coming Soon)
+**Combine Filters:**
+- Use both deck + confidence filters together
+- Status message shows: "✓ Showing X of Y cards"
+- Filtered cards are navigable with Next/Previous/Jump
 
-Future enhancements:
-- **Accept all high-confidence** - Auto-accept cards above threshold
-- **Reject all low-confidence** - Auto-reject cards below threshold
-- **Batch edit** - Apply tag changes to multiple cards
+**Reset Filters:**
+- Select "All Decks" and set confidence to 0.0
+- Click "Apply Filters" to see all cards again
+
+### Bulk Operations ✅ NEW!
+
+**Accept All High Confidence:**
+1. Set threshold slider (default: 90%)
+2. Click "Accept All High Confidence"
+3. All unreviewed cards above threshold are auto-accepted
+4. Status message shows count: "✓ Auto-accepted 18 cards"
+5. Review stats update immediately
+
+**Use Cases:**
+- Process high-quality batch runs quickly
+- Accept obvious cards, review marginal ones
+- Save time on 95%+ confidence cards
+
+**Note**: Bulk accept only affects unreviewed cards (won't override existing decisions)
+
+### Rejection Reasons ✅ NEW!
+
+**Why Track Reasons:**
+- Understand patterns in card quality
+- Improve prompt engineering
+- Train better quality predictors
+- Export for analysis
+
+**How to Use:**
+1. Click "Reject" button (or press `R`)
+2. Dropdown appears with reason options
+3. Select reason (optional but recommended)
+4. If "Other", enter custom text
+5. Move to next card
+
+**Predefined Reasons:**
+- **Duplicate** - Too similar to existing card
+- **Low quality** - Poorly phrased or unclear
+- **Not relevant** - Out of scope for deck
+- **Too vague** - Lacks sufficient context
+- **Too specific** - Overly detailed
+- **Factually wrong** - Incorrect information
+- **Other** - Custom reason (text input)
+
+**Export Feedback:**
+- Click "Export Feedback Data" button
+- Creates `feedback_data_TIMESTAMP.json`
+- Includes all decisions with reasons
+- Use for analysis and improvement
 
 ## Architecture
 

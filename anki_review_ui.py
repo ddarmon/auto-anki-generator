@@ -37,6 +37,7 @@ class CardReviewSession:
         self.contexts = self._load_contexts()
         self.decisions = {}  # card_index -> {action, reason, edited_card}
         self.current_index = 0
+        self.filtered_indices = list(range(len(self.cards)))  # Active card indices
 
     def _load_cards(self) -> List[Dict]:
         """Load proposed cards from run directory."""
@@ -86,6 +87,43 @@ class CardReviewSession:
             'remaining': len(self.cards) - len(self.decisions)
         }
 
+    def apply_filters(self, deck_filter: str = "all", min_confidence: float = 0.0):
+        """Apply filters to card list and update filtered_indices."""
+        self.filtered_indices = []
+        for idx, card in enumerate(self.cards):
+            # Deck filter
+            if deck_filter != "all" and card.get('deck') != deck_filter:
+                continue
+
+            # Confidence filter
+            if card.get('confidence', 0) < min_confidence:
+                continue
+
+            self.filtered_indices.append(idx)
+
+    def get_filtered_card(self, filtered_index: int) -> Optional[Dict]:
+        """Get card at filtered index."""
+        if 0 <= filtered_index < len(self.filtered_indices):
+            actual_index = self.filtered_indices[filtered_index]
+            return self.cards[actual_index]
+        return None
+
+    def get_filtered_index_from_actual(self, actual_index: int) -> int:
+        """Convert actual card index to filtered index."""
+        try:
+            return self.filtered_indices.index(actual_index)
+        except ValueError:
+            return 0
+
+    def bulk_accept_high_confidence(self, threshold: float = 0.90):
+        """Accept all cards above confidence threshold."""
+        count = 0
+        for idx, card in enumerate(self.cards):
+            if idx not in self.decisions and card.get('confidence', 0) >= threshold:
+                self.record_decision(idx, 'accept', reason=f"Auto-accepted (confidence >= {threshold})")
+                count += 1
+        return count
+
     def export_accepted(self, output_path: Path):
         """Export accepted cards to JSON."""
         accepted = []
@@ -97,6 +135,25 @@ class CardReviewSession:
 
         output_path.write_text(json.dumps(accepted, indent=2))
         return len(accepted)
+
+    def export_feedback(self, output_path: Path):
+        """Export all decisions with feedback for learning."""
+        feedback = []
+        for idx, card in enumerate(self.cards):
+            decision = self.decisions.get(idx)
+            if decision:
+                feedback.append({
+                    'card_index': idx,
+                    'context_id': card.get('context_id'),
+                    'deck': card.get('deck'),
+                    'confidence': card.get('confidence'),
+                    'action': decision['action'],
+                    'reason': decision.get('reason', ''),
+                    'timestamp': decision['timestamp']
+                })
+
+        output_path.write_text(json.dumps(feedback, indent=2))
+        return len(feedback)
 
 
 def find_recent_runs(base_dir: Path = Path("auto_anki_runs"), limit: int = 10) -> List[Path]:
@@ -157,6 +214,47 @@ app_ui = ui.page_fluid(
                 height: 30px;
                 font-size: 1em;
             }
+            .keyboard-hint {
+                font-size: 0.85em;
+                color: #6c757d;
+                margin-left: 5px;
+            }
+        """),
+        ui.tags.script("""
+            // Keyboard shortcuts for card review
+            $(document).on('keydown', function(e) {
+                // Don't trigger if user is typing in an input field
+                if ($(e.target).is('input, textarea')) {
+                    return;
+                }
+
+                // Prevent default for our shortcuts
+                if (['a', 'r', 'e', 's', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                    e.preventDefault();
+                }
+
+                // Trigger appropriate button click
+                switch(e.key) {
+                    case 'a':
+                        $('#btn_accept').click();
+                        break;
+                    case 'r':
+                        $('#btn_reject').click();
+                        break;
+                    case 'e':
+                        $('#btn_edit').click();
+                        break;
+                    case 's':
+                        $('#btn_skip').click();
+                        break;
+                    case 'ArrowLeft':
+                        $('#btn_prev').click();
+                        break;
+                    case 'ArrowRight':
+                        $('#btn_next').click();
+                        break;
+                }
+            });
         """)
     ),
 
@@ -237,14 +335,63 @@ app_ui = ui.page_fluid(
 
                 ui.hr(),
 
-                # Action Buttons
+                # Action Buttons with Keyboard Hints
                 ui.div(
-                    ui.input_action_button("btn_accept", "✓ Accept", class_="btn-success", style="margin: 5px;"),
-                    ui.input_action_button("btn_reject", "✗ Reject", class_="btn-danger", style="margin: 5px;"),
-                    ui.input_action_button("btn_edit", "✎ Edit", class_="btn-warning", style="margin: 5px;"),
-                    ui.input_action_button("btn_skip", "⊙ Skip", class_="btn-secondary", style="margin: 5px;"),
-                    ui.input_action_button("btn_prev", "← Previous", class_="btn-info", style="margin: 5px;"),
-                    ui.input_action_button("btn_next", "Next →", class_="btn-info", style="margin: 5px;"),
+                    ui.div(
+                        ui.input_action_button("btn_accept", "✓ Accept", class_="btn-success"),
+                        ui.span(" [A]", class_="keyboard-hint"),
+                        {"style": "display: inline-block; margin: 5px;"}
+                    ),
+                    ui.div(
+                        ui.input_action_button("btn_reject", "✗ Reject", class_="btn-danger"),
+                        ui.span(" [R]", class_="keyboard-hint"),
+                        {"style": "display: inline-block; margin: 5px;"}
+                    ),
+                    ui.div(
+                        ui.input_action_button("btn_edit", "✎ Edit", class_="btn-warning"),
+                        ui.span(" [E]", class_="keyboard-hint"),
+                        {"style": "display: inline-block; margin: 5px;"}
+                    ),
+                    ui.div(
+                        ui.input_action_button("btn_skip", "⊙ Skip", class_="btn-secondary"),
+                        ui.span(" [S]", class_="keyboard-hint"),
+                        {"style": "display: inline-block; margin: 5px;"}
+                    ),
+                    ui.div(
+                        ui.input_action_button("btn_prev", "← Previous", class_="btn-info"),
+                        ui.span(" [←]", class_="keyboard-hint"),
+                        {"style": "display: inline-block; margin: 5px;"}
+                    ),
+                    ui.div(
+                        ui.input_action_button("btn_next", "Next →", class_="btn-info"),
+                        ui.span(" [→]", class_="keyboard-hint"),
+                        {"style": "display: inline-block; margin: 5px;"}
+                    ),
+                ),
+
+                # Rejection Reason (conditional, shown after reject)
+                ui.panel_conditional(
+                    "input.btn_reject > 0",
+                    ui.div(
+                        {"class": "stats-card", "style": "margin-top: 15px;"},
+                        ui.h4("Rejection Reason (Optional)"),
+                        ui.input_select(
+                            "reject_reason",
+                            "",
+                            choices={
+                                "": "-- Select reason --",
+                                "duplicate": "Duplicate / Too similar to existing card",
+                                "low_quality": "Low quality / Poorly phrased",
+                                "not_relevant": "Not relevant / Out of scope",
+                                "too_vague": "Too vague / Lacks context",
+                                "too_specific": "Too specific / Overly detailed",
+                                "factually_wrong": "Factually incorrect",
+                                "other": "Other"
+                            },
+                            width="100%"
+                        ),
+                        ui.input_text("reject_reason_other", "If other, please specify:", width="100%"),
+                    )
                 ),
 
                 # Edit Panel (conditional)
@@ -261,7 +408,7 @@ app_ui = ui.page_fluid(
                 ),
 
                 # Source Context Display
-                ui.h4("Source Context", style="margin-top: 20px;"),
+                ui.h4({"style": "margin-top: 20px;"}, "Source Context"),
                 ui.div(
                     {"class": "context-box"},
                     ui.strong("User Prompt:"),
@@ -315,12 +462,30 @@ app_ui = ui.page_fluid(
                         value=0.0,
                         step=0.05
                     ),
+                    ui.input_action_button("btn_apply_filters", "Apply Filters", class_="btn-primary", width="100%"),
+                    ui.output_text("filter_message", inline=True),
+                ),
+
+                ui.div(
+                    {"class": "stats-card"},
+                    ui.h4("Bulk Actions"),
+                    ui.input_slider(
+                        "bulk_confidence_threshold",
+                        "Auto-accept threshold:",
+                        min=0.80,
+                        max=1.0,
+                        value=0.90,
+                        step=0.05
+                    ),
+                    ui.input_action_button("btn_bulk_accept", "Accept All High Confidence", class_="btn-warning", width="100%"),
+                    ui.output_text("bulk_message", inline=True),
                 ),
 
                 ui.div(
                     {"class": "stats-card"},
                     ui.h4("Export"),
                     ui.input_action_button("btn_export", "Export Accepted Cards", class_="btn-success", width="100%"),
+                    ui.input_action_button("btn_export_feedback", "Export Feedback Data", class_="btn-info", width="100%", style="margin-top: 10px;"),
                     ui.output_text("export_message", inline=True),
                 ),
 
@@ -619,7 +784,11 @@ def server(input: Inputs, output: Outputs, session: Session):
         session = session_state.get()
         if session:
             idx = current_card_index.get()
-            session.record_decision(idx, 'reject')
+            # Get rejection reason if provided
+            reason = input.reject_reason() if input.reject_reason() else ""
+            if reason == "other" and input.reject_reason_other():
+                reason = f"other: {input.reject_reason_other()}"
+            session.record_decision(idx, 'reject', reason=reason)
             # Move to next card
             if idx < len(session.cards) - 1:
                 current_card_index.set(idx + 1)
@@ -692,6 +861,49 @@ def server(input: Inputs, output: Outputs, session: Session):
                 current_card_index.set(idx + 1)
             force_update.set(force_update.get() + 1)
 
+    # Filter functionality
+    filter_msg = reactive.Value("")
+
+    @output
+    @render.text
+    def filter_message():
+        return filter_msg.get()
+
+    @reactive.Effect
+    @reactive.event(input.btn_apply_filters)
+    def _():
+        session = session_state.get()
+        if session:
+            deck = input.filter_deck()
+            min_conf = input.filter_confidence()
+            session.apply_filters(deck_filter=deck, min_confidence=min_conf)
+
+            # Reset to first filtered card
+            if session.filtered_indices:
+                current_card_index.set(session.filtered_indices[0])
+                filter_msg.set(f"✓ Showing {len(session.filtered_indices)} of {len(session.cards)} cards")
+            else:
+                filter_msg.set("⚠ No cards match filters")
+            force_update.set(force_update.get() + 1)
+
+    # Bulk actions
+    bulk_msg = reactive.Value("")
+
+    @output
+    @render.text
+    def bulk_message():
+        return bulk_msg.get()
+
+    @reactive.Effect
+    @reactive.event(input.btn_bulk_accept)
+    def _():
+        session = session_state.get()
+        if session:
+            threshold = input.bulk_confidence_threshold()
+            count = session.bulk_accept_high_confidence(threshold=threshold)
+            bulk_msg.set(f"✓ Auto-accepted {count} cards (confidence ≥ {threshold:.0%})")
+            force_update.set(force_update.get() + 1)
+
     # Export functionality
     export_msg = reactive.Value("")
 
@@ -711,6 +923,20 @@ def server(input: Inputs, output: Outputs, session: Session):
 
             count = session.export_accepted(output_file)
             export_msg.set(f"✓ Exported {count} cards to {output_file.name}")
+        else:
+            export_msg.set("✗ No session loaded")
+
+    @reactive.Effect
+    @reactive.event(input.btn_export_feedback)
+    def _():
+        session = session_state.get()
+        if session:
+            output_dir = session.run_dir
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            output_file = output_dir / f"feedback_data_{timestamp}.json"
+
+            count = session.export_feedback(output_file)
+            export_msg.set(f"✓ Exported {count} feedback records to {output_file.name}")
         else:
             export_msg.set("✗ No session loaded")
 
