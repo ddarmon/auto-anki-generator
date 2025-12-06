@@ -1537,8 +1537,13 @@ for chunk in chunks:
 
 **Improve card quality**
 
-1.  [ ] Two-stage LLM pipeline (cost reduction)
-2.  [x] Semantic deduplication with embeddings (initial implementation using SentenceTransformers + FAISS-based vector cache)
+1.  [x] Two-stage LLM pipeline (cost reduction)
+    - Implemented as optional `--two-stage` mode (now default)
+    - Stage 1: fast filter model (`gpt-5.1` with `model_reasoning_effort=low` by default)
+    - Stage 2: full card generation model (`gpt-5.1` with `model_reasoning_effort=high` by default)
+    - Still room for improvement: richer filter signals, cost/usage metrics
+2.  [x] Semantic deduplication with embeddings
+    - Initial implementation using SentenceTransformers + FAISS-based vector cache
 3.  [ ] Enhanced scoring heuristics
 4.  [ ] Quality validation & auto-fix
 5.  [ ] Configurable prompt templates

@@ -47,6 +47,9 @@ try:
 except ImportError:
     FAISS_AVAILABLE = False
 
+# Silence HuggingFace tokenizers fork/parallelism warnings
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 
 class DateRangeFilter:
     """Parse and apply date range filters to conversation file paths."""
@@ -346,6 +349,34 @@ def parse_args() -> argparse.Namespace:
         help="Cosine similarity threshold for semantic deduplication (default: %(default)s).",
     )
     parser.add_argument(
+        "--two-stage",
+        dest="two_stage",
+        action="store_true",
+        help=(
+            "Enable two-stage LLM pipeline: fast stage-1 filter + stage-2 card generator "
+            "(default: enabled; use --single-stage to disable)."
+        ),
+    )
+    parser.add_argument(
+        "--single-stage",
+        dest="two_stage",
+        action="store_false",
+        help="Disable two-stage LLM pipeline and use single-stage card generation.",
+    )
+    parser.add_argument(
+        "--codex-model-stage1",
+        default="gpt-5.1",
+        help="Codex model to use for stage-1 filtering when --two-stage is enabled (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--codex-model-stage2",
+        default="gpt-5.1",
+        help=(
+            "Codex model to use for stage-2 card generation when --two-stage is enabled "
+            "(default: %(default)s). If not set, falls back to --codex-model or 'gpt-5.1'."
+        ),
+    )
+    parser.add_argument(
         "--min-score",
         type=float,
         default=1.2,
@@ -377,12 +408,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--codex-model",
         default=None,
-        help="Optional model override passed to codex exec via --model (default: gpt-5).",
+        help="Optional model override passed to codex exec via --model (default: gpt-5.1).",
     )
     parser.add_argument(
         "--model-reasoning-effort",
-        default="medium",
-        help="Set Codex config model_reasoning_effort (default: %(default)s).",
+        default=None,
+        help=(
+            "Set Codex config model_reasoning_effort. "
+            "If unset, defaults to 'medium' in single-stage mode, "
+            "or 'low' (stage 1) / 'high' (stage 2) when --two-stage is enabled."
+        ),
     )
     parser.add_argument(
         "--codex-extra-arg",
@@ -395,6 +430,9 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print additional progress information.",
     )
+    # Defaults
+    parser.set_defaults(two_stage=True)
+
     args = parser.parse_args()
     if args.contexts_per_run <= 0:
         parser.error("--contexts-per-run must be positive.")
@@ -1128,6 +1166,9 @@ def build_codex_prompt(
     contexts: List[ChatTurn],
     args: argparse.Namespace,
 ) -> str:
+    """
+    Build the stage-2 card generation prompt.
+    """
     cards_payload = [
         {
             "deck": card.deck,
@@ -1267,22 +1308,110 @@ def build_codex_prompt(
     return instructions + "\n\n" + json.dumps(payload, indent=2, ensure_ascii=False)
 
 
+def build_codex_filter_prompt(
+    contexts: List[ChatTurn],
+    args: argparse.Namespace,
+) -> str:
+    """
+    Build the stage-1 filtering prompt for the two-stage pipeline.
+
+    Stage 1 should be fast and cheap: it only decides which contexts
+    are worth sending to the more expensive card-generation stage.
+    """
+    contexts_payload = [
+        {
+            "context_id": ctx.context_id,
+            "source_path": ctx.source_path,
+            "source_title": ctx.source_title,
+            "source_url": ctx.source_url,
+            "user_timestamp": ctx.user_timestamp,
+            "user_prompt": ctx.user_prompt,
+            "assistant_answer": ctx.assistant_answer,
+            "assistant_char_count": ctx.assistant_char_count,
+            "score": round(ctx.score, 3),
+            "signals": ctx.signals,
+            "key_terms": ctx.key_terms,
+            "key_points": ctx.key_points,
+        }
+        for ctx in contexts
+    ]
+    contract = {
+        "filter_decisions": [
+            {
+                "context_id": "string",
+                "keep": "boolean (true if this context should be sent to the expensive card-generation stage)",
+                "reason": "short reason for keeping or skipping this context",
+            }
+        ]
+    }
+    payload = {
+        "candidate_contexts": contexts_payload,
+        "output_contract": contract,
+    }
+    instructions = textwrap.dedent(
+        """
+        CRITICAL: You MUST respond with ONLY valid JSON matching the output_contract below.
+        Do NOT include markdown, explanations, or any text outside the JSON structure.
+        Do NOT wrap the JSON in ```json blocks.
+
+        You are the fast, cheap *filtering* stage of an autonomous spaced-repetition agent.
+
+        ## Your Goal
+
+        Quickly decide which candidate contexts are worth sending to a slower, more
+        expensive card-generation model.
+
+        Focus on:
+        - Educational value (clear concepts, stable knowledge)
+        - Clarity and structure (good explanations, examples, lists)
+        - Non-trivial content (avoid obvious, shallow, or throwaway exchanges)
+
+        You DO NOT generate cards here.
+
+        ## For Each `candidate_context`
+
+        1. Decide if it contains learning-worthy content that would likely result in
+           at least one good flashcard.
+        2. Set `keep = true` if it should be passed to the card-generation stage,
+           otherwise `keep = false`.
+        3. Provide a short `reason` (e.g., "clear definition of X", "too trivial",
+           "highly procedural, not ideal for SRS").
+
+        ## Output Requirements
+
+        Return ONLY valid JSON adhering to `output_contract`. Critical rules:
+        - NO markdown fencing (no ```json blocks)
+        - NO explanatory text before or after the JSON
+        - NO comments inside the JSON
+        - START your response with `{` and END with `}`
+
+        YOUR ENTIRE RESPONSE MUST BE VALID, PARSEABLE JSON.
+        """
+    ).strip()
+    return instructions + "\n\n" + json.dumps(payload, indent=2, ensure_ascii=False)
+
+
 def run_codex_exec(
     prompt: str,
     chunk_idx: int,
     run_dir: Path,
     args: argparse.Namespace,
+    *,
+    model_override: Optional[str] = None,
+    reasoning_override: Optional[str] = None,
+    label: str = "",
 ) -> str:
-    prompt_path = run_dir / f"prompt_chunk_{chunk_idx:02d}.txt"
+    prompt_path = run_dir / f"prompt{label}_chunk_{chunk_idx:02d}.txt"
     prompt_path.write_text(prompt)
-    last_msg_path = run_dir / f"codex_response_chunk_{chunk_idx:02d}.json"
+    last_msg_path = run_dir / f"codex{label}_response_chunk_{chunk_idx:02d}.json"
 
     # Build command
     cmd = ["codex", "exec", "-", "--skip-git-repo-check"]
-    model = args.codex_model or "gpt-5"
+    model = model_override or args.codex_model or "gpt-5.1"
     cmd.extend(["--model", model])
-    if args.model_reasoning_effort:
-        cmd.extend(["-c", f"model_reasoning_effort={args.model_reasoning_effort}"])
+    reasoning = reasoning_override or args.model_reasoning_effort
+    if reasoning:
+        cmd.extend(["-c", f"model_reasoning_effort={reasoning}"])
 
     for extra in args.codex_extra_arg:
         if extra:
@@ -1295,8 +1424,8 @@ def run_codex_exec(
         capture_output=True,
         cwd=os.getcwd(),
     )
-    (run_dir / f"codex_stdout_chunk_{chunk_idx:02d}.log").write_text(proc.stdout)
-    (run_dir / f"codex_stderr_chunk_{chunk_idx:02d}.log").write_text(proc.stderr)
+    (run_dir / f"codex{label}_stdout_chunk_{chunk_idx:02d}.log").write_text(proc.stdout)
+    (run_dir / f"codex{label}_stderr_chunk_{chunk_idx:02d}.log").write_text(proc.stderr)
     if proc.returncode != 0:
         raise RuntimeError(
             f"codex exec failed for chunk {chunk_idx} with exit code {proc.returncode}"
@@ -1308,14 +1437,15 @@ def parse_codex_response_robust(
     response_text: str,
     chunk_idx: int,
     run_dir: Path,
-    verbose: bool = False
+    verbose: bool = False,
+    label: str = "",
 ) -> Optional[Dict[str, Any]]:
     """
     Parse codex JSON response with multiple fallback strategies.
     Returns None if all strategies fail.
     """
     # Save raw response
-    raw_path = run_dir / f"codex_raw_response_chunk_{chunk_idx:02d}.txt"
+    raw_path = run_dir / f"codex{label}_raw_response_chunk_{chunk_idx:02d}.txt"
     raw_path.write_text(response_text)
 
     strategies = []
@@ -1348,7 +1478,7 @@ def parse_codex_response_robust(
             if verbose:
                 print(f"  ✓ Parsed with strategy: {strategy_name}")
             # Save the working version
-            (run_dir / f"codex_parsed_response_chunk_{chunk_idx:02d}.json").write_text(
+            (run_dir / f"codex{label}_parsed_response_chunk_{chunk_idx:02d}.json").write_text(
                 json.dumps(result, indent=2)
             )
             return result
@@ -1358,7 +1488,7 @@ def parse_codex_response_robust(
             continue
 
     # All strategies failed - save debug info
-    error_file = run_dir / f"codex_FAILED_chunk_{chunk_idx:02d}.txt"
+    error_file = run_dir / f"codex{label}_FAILED_chunk_{chunk_idx:02d}.txt"
     error_info = f"""All JSON parsing strategies failed for chunk {chunk_idx}
 
 Strategies tried:
@@ -1428,11 +1558,17 @@ def main() -> None:
 
     cards_for_prompt = select_existing_cards_for_prompt(cards, args.max_existing_cards)
 
-    # Process chunks
+    # Process chunks (optionally with two-stage pipeline)
     new_seen_ids: List[str] = []
     all_proposed_cards: List[Dict[str, Any]] = []
     processed_files: set[Path] = set()
-    chunk_stats = {"success": 0, "failed": 0, "total_cards": 0}
+    chunk_stats: Dict[str, Any] = {
+        "success": 0,
+        "failed": 0,
+        "total_cards": 0,
+        "stage1_kept": 0,
+        "stage1_total": 0,
+    }
 
     total_chunks = (len(contexts) + args.contexts_per_run - 1) // args.contexts_per_run
     if args.verbose:
@@ -1444,7 +1580,88 @@ def main() -> None:
             print(f"Chunk {idx}/{total_chunks}: Processing {len(chunk)} contexts")
             print(f"{'='*60}")
 
-        prompt = build_codex_prompt(cards_for_prompt, chunk, args)
+        # Optionally run stage-1 filter
+        filtered_chunk = chunk
+        if args.two_stage:
+            if args.verbose:
+                print("  Stage 1: filtering contexts before card generation...")
+
+            filter_prompt = build_codex_filter_prompt(chunk, args)
+
+            if args.dry_run:
+                # Save stage-1 prompt and a generic stage-2 prompt template
+                prompt_stage1_path = run_dir / f"prompt_stage1_chunk_{idx:02d}.txt"
+                prompt_stage1_path.write_text(filter_prompt)
+                prompt_stage2_path = run_dir / f"prompt_chunk_{idx:02d}.txt"
+                stage2_preview = build_codex_prompt(cards_for_prompt, chunk, args)
+                prompt_stage2_path.write_text(stage2_preview)
+                if args.verbose:
+                    print(f"[dry-run] Saved stage-1 prompt for chunk {idx} at {prompt_stage1_path}")
+                    print(f"[dry-run] Saved stage-2 preview prompt for chunk {idx} at {prompt_stage2_path}")
+                # Skip actual codex calls in dry-run
+                continue
+
+            try:
+                stage1_reasoning = args.model_reasoning_effort or "low"
+                response_text_stage1 = run_codex_exec(
+                    filter_prompt,
+                    idx,
+                    run_dir,
+                    args,
+                    model_override=args.codex_model_stage1,
+                    reasoning_override=stage1_reasoning,
+                    label="_stage1",
+                )
+
+                if args.verbose:
+                    print(f"✓ Received response from stage-1 codex (chunk {idx})")
+                    print("  Parsing JSON response for filter decisions...")
+
+                response_json_stage1 = parse_codex_response_robust(
+                    response_text_stage1, idx, run_dir, args.verbose, label="_stage1"
+                )
+
+                if response_json_stage1 is None:
+                    print(f"⚠️  Stage-1 parsing FAILED for chunk {idx}; falling back to sending all contexts to stage 2.")
+                    kept_ids: Optional[set[str]] = None
+                else:
+                    decisions = response_json_stage1.get("filter_decisions", [])
+                    kept_ids = {
+                        d.get("context_id")
+                        for d in decisions
+                        if isinstance(d, dict) and d.get("keep") is True and d.get("context_id")
+                    }
+                    total_decisions = len(decisions)
+                    kept_count = len(kept_ids)
+                    chunk_stats["stage1_kept"] += kept_count
+                    chunk_stats["stage1_total"] += max(len(chunk), total_decisions or len(chunk))
+                    if args.verbose:
+                        print(f"  Stage-1 kept {kept_count}/{len(chunk)} contexts for stage 2.")
+
+                if kept_ids:
+                    filtered_chunk = [ctx for ctx in chunk if ctx.context_id in kept_ids]
+                else:
+                    filtered_chunk = chunk
+
+                if not filtered_chunk:
+                    if args.verbose:
+                        print(f"  Stage-1 filtered out all contexts in chunk {idx}; skipping stage 2.")
+                    for ctx in chunk:
+                        new_seen_ids.append(ctx.context_id)
+                        processed_files.add(Path(ctx.source_path))
+                    continue
+
+            except Exception as e:
+                # Stage-1 failure: log and fall back to single-stage behaviour
+                error_file = run_dir / f"codex_stage1_ERROR_chunk_{idx:02d}.txt"
+                error_file.write_text(f"Unexpected error in stage-1 for chunk {idx}:\n\n{str(e)}")
+                print(f"⚠️  Stage-1 ERROR for chunk {idx}: {str(e)[:100]}")
+                print(f"   Error saved to: {error_file}")
+                print("   Falling back to sending all contexts to stage 2.")
+                filtered_chunk = chunk
+
+        # Stage-2: full card generation
+        prompt = build_codex_prompt(cards_for_prompt, filtered_chunk, args)
         if args.dry_run:
             prompt_path = run_dir / f"prompt_chunk_{idx:02d}.txt"
             prompt_path.write_text(prompt)
@@ -1453,11 +1670,26 @@ def main() -> None:
             continue
 
         if args.verbose:
-            print(f"Calling codex exec for chunk {idx}...")
+            print(f"Calling codex exec for chunk {idx} (stage 2)...")
             print(f"  (This may take 30-60 seconds depending on model and context size)")
 
         try:
-            response_text = run_codex_exec(prompt, idx, run_dir, args)
+            # Choose appropriate model and reasoning effort for stage 2
+            stage2_model = args.codex_model_stage2 if args.two_stage else None
+            if args.two_stage:
+                stage2_reasoning = args.model_reasoning_effort or "high"
+            else:
+                stage2_reasoning = args.model_reasoning_effort or "medium"
+
+            response_text = run_codex_exec(
+                prompt,
+                idx,
+                run_dir,
+                args,
+                model_override=stage2_model,
+                reasoning_override=stage2_reasoning,
+                label="",
+            )
 
             if args.verbose:
                 print(f"✓ Received response from codex (chunk {idx})")
@@ -1465,7 +1697,7 @@ def main() -> None:
 
             # Use robust multi-strategy parser
             response_json = parse_codex_response_robust(
-                response_text, idx, run_dir, args.verbose
+                response_text, idx, run_dir, args.verbose, label=""
             )
 
             if response_json is None:
@@ -1493,7 +1725,7 @@ def main() -> None:
                 print(f"    {cards_in_chunk} cards proposed")
                 print(f"    {skipped_in_chunk} contexts skipped")
 
-            for ctx in chunk:
+            for ctx in filtered_chunk:
                 new_seen_ids.append(ctx.context_id)
                 processed_files.add(Path(ctx.source_path))
 

@@ -54,6 +54,10 @@ python3 auto_anki_agent.py \
 - `--cache-dir PATH`: Directory for parsed deck + semantic embedding cache (default: .deck_cache next to script)
 - `--max-contexts N`: Maximum contexts to gather per run (default: 24)
 - `--contexts-per-run N`: Contexts per codex exec call (default: 8)
+- `--two-stage`: Enable two-stage LLM pipeline (stage-1 filter + stage-2 generator, **default: enabled**)
+- `--single-stage`: Disable two-stage pipeline and use single-stage card generation
+- `--codex-model-stage1 MODEL`: Codex model for fast stage-1 filtering (default: same as `--codex-model`, usually `gpt-5`)
+- `--codex-model-stage2 MODEL`: Codex model for stage-2 card generation (default: same as `--codex-model`, usually `gpt-5`)
 - `--similarity-threshold FLOAT`: String-based similarity threshold for dedup (default: 0.82)
 - `--dedup-method {string,semantic,hybrid}`: Choose dedup strategy (default: **hybrid**, auto-falls back to string if dependencies unavailable)
 - `--semantic-model NAME`: SentenceTransformers model for semantic dedup (default: all-MiniLM-L6-v2)
@@ -151,6 +155,19 @@ python3 auto_anki_agent.py \
   --codex-model gpt-5-codex
 ```
 
+### Two-Stage Pipeline (Cheaper Runs)
+
+```bash
+python3 auto_anki_agent.py \
+  --unprocessed-only \
+  --two-stage \
+  --verbose
+```
+
+This uses a fast model (`gpt-5.1` with `model_reasoning_effort=low`) to filter contexts (stage 1) and
+only sends the most promising ones to a stronger model (`gpt-5.1` with `model_reasoning_effort=high`)
+for card generation (stage 2).
+
 ## Tips
 
 1. **Start with `--dry-run`**: Preview prompts before spending tokens
@@ -215,8 +232,13 @@ rm .auto_anki_agent_state.json
         │
         ▼
 ┌──────────────────┐
+│  Stage 1 (Filter)│  ← Fast model (e.g., gpt-5.1 w/ low reasoning)
+└───────┬──────────┘
+        │ (keep only best contexts)
+        ▼
+┌──────────────────┐
+│  Stage 2 (Cards) │  ← Strong model (e.g., gpt-5.1 w/ high reasoning)
 │  codex exec      │  ← LLM Decision Layer
-│  (Agentic)       │
 └───────┬──────────┘
         │
         ▼
