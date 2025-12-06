@@ -317,10 +317,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dedup-method",
         choices=["string", "semantic", "hybrid"],
-        default="string",
+        default="hybrid",
         help=(
             "Deduplication method: 'string' uses lexical similarity only, "
-            "'semantic' uses embedding-based similarity, 'hybrid' uses both."
+            "'semantic' uses embedding-based similarity, 'hybrid' uses both. "
+            "(default: %(default)s; auto-falls back to 'string' if semantic dependencies unavailable)"
         ),
     )
     parser.add_argument(
@@ -834,25 +835,23 @@ def prune_contexts(
         try:
             from sentence_transformers import SentenceTransformer  # type: ignore
             import numpy as _np  # type: ignore
-        except ImportError as exc:
-            raise SystemExit(
-                "Semantic deduplication requires the 'sentence-transformers' and 'numpy' packages.\n"
-                "Install them, for example:\n\n"
-                "  uv pip install -e '.[semantic]'\n"
-                "  # or\n"
-                "  pip install 'sentence-transformers' 'numpy'\n"
-            ) from exc
 
-        if args.verbose:
-            print("Building semantic index over existing cards for deduplication...")
+            if args.verbose:
+                print("Building semantic index over existing cards for deduplication...")
 
-        semantic_index = SemanticCardIndex(
-            cards=cards,
-            sentence_transformer_cls=SentenceTransformer,
-            np_module=_np,
-            model_name=args.semantic_model,
-            verbose=args.verbose,
-        )
+            semantic_index = SemanticCardIndex(
+                cards=cards,
+                sentence_transformer_cls=SentenceTransformer,
+                np_module=_np,
+                model_name=args.semantic_model,
+                verbose=args.verbose,
+            )
+        except ImportError:
+            # Fall back to string-based deduplication
+            print("⚠ Semantic deduplication dependencies not found. Falling back to string-based deduplication.")
+            print("  For better duplicate detection, install: uv pip install -e '.[semantic]'")
+            print("  or: pip install sentence-transformers numpy")
+            print()
 
     for idx, context in enumerate(sorted(contexts, key=lambda c: c.score, reverse=True), 1):
         if args.verbose:

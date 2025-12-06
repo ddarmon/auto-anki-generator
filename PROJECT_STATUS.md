@@ -187,9 +187,9 @@ Start studying! 🎓
 - ✅ 10+ heuristic signals
 - ✅ Date range filtering
 - ✅ State-based incremental processing
-- ✅ String-based deduplication (default)
-- ✅ Semantic deduplication (embeddings-based, optional)
-- ✅ Hybrid deduplication mode
+- ✅ **Hybrid deduplication (default)** - semantic + string matching
+- ✅ Automatic fallback to string-based if dependencies unavailable
+- ✅ Three dedup modes: string, semantic, hybrid
 - ✅ LLM-based intelligent generation
 - ✅ JSON and Markdown output
 
@@ -280,8 +280,8 @@ python3 auto_anki_agent.py --unprocessed-only --verbose
 ✅ **Card Generation**
 - Harvesting from ChatGPT exports
 - Heuristic scoring
-- String-based deduplication (default)
-- Semantic deduplication (embeddings, optional)
+- Hybrid deduplication (semantic + string, default)
+- Auto-fallback to string-only if dependencies unavailable
 - LLM generation
 - JSON/Markdown output
 
@@ -335,10 +335,11 @@ $ ./launch_ui.sh
 2. **No media import** - Images/audio not yet supported
    - Future: Media file handling
 
-3. ~~**String-based deduplication only**~~ ✅ **NOW OPTIONAL** - Semantic deduplication available
-   - Default: String-based (sequence matching)
-   - Optional: Semantic (embeddings-based) via `--dedup-method semantic`
-   - Install with: `uv pip install -e ".[semantic]"`
+3. ~~**String-based deduplication only**~~ ✅ **HYBRID MODE DEFAULT** - Semantic deduplication enabled
+   - Default: Hybrid (semantic + string matching)
+   - Auto-fallback: Falls back to string-only if dependencies unavailable
+   - For best results: `uv pip install -e ".[semantic]"`
+   - Override: `--dedup-method {string,semantic,hybrid}`
 
 4. **Single LLM model** - Uses one model for all generation
    - Future: Two-stage pipeline (fast filter + slow generation)

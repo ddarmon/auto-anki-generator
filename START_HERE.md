@@ -13,8 +13,14 @@ An **end-to-end system** that generates flashcards from your ChatGPT conversatio
 ### 1. Install Dependencies
 
 ```bash
-# One-time setup
+# Install UI dependencies (for interactive review)
 uv pip install -e ".[ui]"
+
+# Install semantic dependencies (recommended for better duplicate detection)
+uv pip install -e ".[semantic]"
+
+# Or install both at once
+uv pip install -e ".[ui,semantic]"
 ```
 
 ### 2. Install AnkiConnect Plugin
@@ -162,39 +168,46 @@ This is **normal** - AnkiConnect prevents duplicates by default.
 - vs manual import = 25-50 minutes
 - **80-90% time savings!**
 
-## Advanced: Semantic Deduplication 🚀
+## Semantic Deduplication (Recommended) 🚀
 
-For better duplicate detection using AI embeddings:
+**Now enabled by default!** The system automatically uses AI embeddings for better duplicate detection.
 
-### Install Semantic Dependencies
+### Quick Start
 
 ```bash
-# Option 1: Using uv
+# For best results, install semantic dependencies
 uv pip install -e ".[semantic]"
-
-# Option 2: Using pip
+# or
 pip install sentence-transformers numpy
+
+# Then use normally - hybrid mode is now the default!
+python3 auto_anki_agent.py --unprocessed-only --verbose
 ```
 
-### Use Semantic Deduplication
+**Without dependencies:**
+- Automatically falls back to string-based deduplication
+- Shows a warning with installation instructions
+- Still works, but won't catch paraphrased duplicates
+
+### Advanced Usage
 
 ```bash
-# Semantic only (catches paraphrased duplicates)
+# Use semantic only (no string matching)
 python3 auto_anki_agent.py --dedup-method semantic --verbose
 
-# Hybrid (both string and semantic checks)
-python3 auto_anki_agent.py --dedup-method hybrid --verbose
+# Force string-only mode (legacy behavior)
+python3 auto_anki_agent.py --dedup-method string --verbose
 
-# Adjust threshold (default 0.85 = 85% similarity)
-python3 auto_anki_agent.py --dedup-method semantic --semantic-similarity-threshold 0.90
+# Adjust semantic threshold (default 0.85 = 85% similarity)
+python3 auto_anki_agent.py --semantic-similarity-threshold 0.90 --verbose
 ```
 
-**When to use:**
-- Large existing card decks (better duplicate detection)
-- Paraphrased content (catches semantic duplicates)
-- High-quality filtering (reduce redundancy)
+**Why hybrid mode (default)?**
+- Catches exact duplicates (string matching)
+- Catches paraphrased duplicates (semantic embeddings)
+- Best of both worlds!
 
-**Default model:** `all-MiniLM-L6-v2` (fast, local, no API calls)
+**Model used:** `all-MiniLM-L6-v2` (fast, local, no API calls)
 
 ## Next Steps
 

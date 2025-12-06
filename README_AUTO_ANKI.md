@@ -54,7 +54,7 @@ python3 auto_anki_agent.py \
 - `--max-contexts N`: Maximum contexts to gather per run (default: 24)
 - `--contexts-per-run N`: Contexts per codex exec call (default: 8)
 - `--similarity-threshold FLOAT`: String-based similarity threshold for dedup (default: 0.82)
-- `--dedup-method {string,semantic,hybrid}`: Choose dedup strategy (default: string)
+- `--dedup-method {string,semantic,hybrid}`: Choose dedup strategy (default: **hybrid**, auto-falls back to string if dependencies unavailable)
 - `--semantic-model NAME`: SentenceTransformers model for semantic dedup (default: all-MiniLM-L6-v2)
 - `--semantic-similarity-threshold FLOAT`: Cosine similarity threshold for semantic dedup (default: 0.85)
 - `--dry-run`: Build prompts without calling codex
@@ -157,11 +157,13 @@ python3 auto_anki_agent.py \
 3. **Review markdown output**: Easier to scan than JSON
 4. **Adjust scoring**: Use `--min-score` to filter more/less aggressively
 5. **Control deduplication**:
-   - Use `--similarity-threshold` to tune string-based matching
-   - Enable semantic dedup with `--dedup-method semantic` or `--dedup-method hybrid`
-   - Install semantic extras with:
+   - **Default**: Hybrid mode (semantic + string) - automatically falls back to string if dependencies unavailable
+   - Use `--similarity-threshold` to tune string-based matching (default: 0.82)
+   - Use `--semantic-similarity-threshold` to tune semantic matching (default: 0.85)
+   - For best results, install semantic extras:
      - `uv pip install -e ".[semantic]"` or
      - `pip install sentence-transformers numpy`
+   - Force string-only mode: `--dedup-method string`
 6. **Process incrementally**: Use `--unprocessed-only` for daily runs
 
 ## Troubleshooting
