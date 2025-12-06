@@ -118,6 +118,7 @@ python3 auto_anki_agent.py --unprocessed-only --verbose
 - Bulk accept high-confidence
 - Track rejection reasons
 - Export feedback data
+- Semantic deduplication (embeddings-based)
 
 ✅ **Direct Anki Import**
 - One-click import
@@ -161,20 +162,58 @@ This is **normal** - AnkiConnect prevents duplicates by default.
 - vs manual import = 25-50 minutes
 - **80-90% time savings!**
 
+## Advanced: Semantic Deduplication 🚀
+
+For better duplicate detection using AI embeddings:
+
+### Install Semantic Dependencies
+
+```bash
+# Option 1: Using uv
+uv pip install -e ".[semantic]"
+
+# Option 2: Using pip
+pip install sentence-transformers numpy
+```
+
+### Use Semantic Deduplication
+
+```bash
+# Semantic only (catches paraphrased duplicates)
+python3 auto_anki_agent.py --dedup-method semantic --verbose
+
+# Hybrid (both string and semantic checks)
+python3 auto_anki_agent.py --dedup-method hybrid --verbose
+
+# Adjust threshold (default 0.85 = 85% similarity)
+python3 auto_anki_agent.py --dedup-method semantic --semantic-similarity-threshold 0.90
+```
+
+**When to use:**
+- Large existing card decks (better duplicate detection)
+- Paraphrased content (catches semantic duplicates)
+- High-quality filtering (reduce redundancy)
+
+**Default model:** `all-MiniLM-L6-v2` (fast, local, no API calls)
+
 ## Next Steps
 
 After your first successful run:
 
-1. **Adjust settings** - Edit `auto_anki_agent.py` constants:
-   - `DEFAULT_MAX_CONTEXTS` - More/fewer contexts per run
-   - `DEFAULT_MIN_SCORE` - Quality threshold
-   - `DEFAULT_SIMILARITY_THRESHOLD` - Deduplication sensitivity
+1. **Adjust settings** - CLI options:
+   - `--max-contexts N` - More/fewer contexts per run
+   - `--min-score FLOAT` - Quality threshold
+   - `--similarity-threshold FLOAT` - String dedup sensitivity
+   - `--dedup-method {string,semantic,hybrid}` - Dedup strategy
 
-2. **Review feedback** - Export feedback data to see rejection patterns
+2. **Enable semantic dedup** - Install `[semantic]` extras for better duplicate detection
 
-3. **Optimize prompts** - Improve card generation based on review patterns
+3. **Review feedback** - Export feedback data to see rejection patterns
 
-4. **Explore advanced features**:
+4. **Optimize prompts** - Improve card generation based on review patterns
+
+5. **Explore advanced features**:
+   - Semantic deduplication
    - Custom deck routing
    - Tag taxonomy
    - Bulk operations

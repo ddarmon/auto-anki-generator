@@ -187,7 +187,9 @@ Start studying! 🎓
 - ✅ 10+ heuristic signals
 - ✅ Date range filtering
 - ✅ State-based incremental processing
-- ✅ Deduplication against existing decks
+- ✅ String-based deduplication (default)
+- ✅ Semantic deduplication (embeddings-based, optional)
+- ✅ Hybrid deduplication mode
 - ✅ LLM-based intelligent generation
 - ✅ JSON and Markdown output
 
@@ -278,7 +280,8 @@ python3 auto_anki_agent.py --unprocessed-only --verbose
 ✅ **Card Generation**
 - Harvesting from ChatGPT exports
 - Heuristic scoring
-- Deduplication
+- String-based deduplication (default)
+- Semantic deduplication (embeddings, optional)
 - LLM generation
 - JSON/Markdown output
 
@@ -332,8 +335,10 @@ $ ./launch_ui.sh
 2. **No media import** - Images/audio not yet supported
    - Future: Media file handling
 
-3. **String-based deduplication** - Uses sequence matching
-   - Future: Semantic deduplication with embeddings
+3. ~~**String-based deduplication only**~~ ✅ **NOW OPTIONAL** - Semantic deduplication available
+   - Default: String-based (sequence matching)
+   - Optional: Semantic (embeddings-based) via `--dedup-method semantic`
+   - Install with: `uv pip install -e ".[semantic]"`
 
 4. **Single LLM model** - Uses one model for all generation
    - Future: Two-stage pipeline (fast filter + slow generation)
@@ -362,10 +367,10 @@ These are documented in FUTURE_DIRECTIONS.md with detailed proposals.
 
 **Potential next enhancements:**
 
-1. **Semantic Deduplication** (High Priority)
-   - Use embeddings (sentence-transformers)
-   - FAISS or ChromaDB for similarity search
-   - Catch semantic duplicates, not just exact matches
+1. ~~**Semantic Deduplication**~~ ✅ **DONE!**
+   - Implemented with SentenceTransformers embeddings
+   - Three modes: string, semantic, hybrid
+   - Future: FAISS/ChromaDB for faster vector search on large decks
 
 2. **Two-Stage LLM Pipeline** (High Priority)
    - Fast pre-filter with small model
