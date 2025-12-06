@@ -584,8 +584,8 @@ This project has **significant** planned enhancements documented in
 2.  ~~**Interactive review mode**~~ ✅ **DONE!**
 3.  **Two-stage LLM pipeline** - Fast pre-filter + slow generation
     - Initial implementation available via `--two-stage`
-    - Stage 1: filter contexts (`gpt-5.1 low` by default)
-    - Stage 2: generate cards (`gpt-5.1 high` by default)
+    - Stage 1: filter contexts (`gpt-5.1` with `model_reasoning_effort=low` by default)
+    - Stage 2: generate cards (`gpt-5.1` with `model_reasoning_effort=high` by default)
 4.  ~~**AnkiConnect integration**~~ ✅ **DONE!**
 5.  **Active learning** - Feedback loop to improve quality over time
 

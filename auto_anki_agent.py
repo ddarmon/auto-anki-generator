@@ -41,6 +41,9 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from bs4 import BeautifulSoup  # type: ignore
 from json_repair import repair_json
 
+# Silence HuggingFace tokenizers fork/parallelism warnings
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 
 class DateRangeFilter:
     """Parse and apply date range filters to conversation file paths."""
@@ -337,23 +340,30 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--two-stage",
+        dest="two_stage",
         action="store_true",
-        help="Enable two-stage LLM pipeline: fast stage-1 filter + stage-2 card generator.",
-    )
-    parser.add_argument(
-        "--codex-model-stage1",
-        default="gpt-5.1 low",
         help=(
-            "Codex model to use for stage-1 filtering when --two-stage is enabled "
-            "(default: %(default)s)."
+            "Enable two-stage LLM pipeline: fast stage-1 filter + stage-2 card generator "
+            "(default: enabled; use --single-stage to disable)."
         ),
     )
     parser.add_argument(
+        "--single-stage",
+        dest="two_stage",
+        action="store_false",
+        help="Disable two-stage LLM pipeline and use single-stage card generation.",
+    )
+    parser.add_argument(
+        "--codex-model-stage1",
+        default="gpt-5.1",
+        help="Codex model to use for stage-1 filtering when --two-stage is enabled (default: %(default)s).",
+    )
+    parser.add_argument(
         "--codex-model-stage2",
-        default="gpt-5.1 high",
+        default="gpt-5.1",
         help=(
             "Codex model to use for stage-2 card generation when --two-stage is enabled "
-            "(default: %(default)s). If not set, falls back to --codex-model or 'gpt-5'."
+            "(default: %(default)s). If not set, falls back to --codex-model or 'gpt-5.1'."
         ),
     )
     parser.add_argument(
@@ -388,12 +398,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--codex-model",
         default=None,
-        help="Optional model override passed to codex exec via --model (default: gpt-5).",
+        help="Optional model override passed to codex exec via --model (default: gpt-5.1).",
     )
     parser.add_argument(
         "--model-reasoning-effort",
-        default="medium",
-        help="Set Codex config model_reasoning_effort (default: %(default)s).",
+        default=None,
+        help=(
+            "Set Codex config model_reasoning_effort. "
+            "If unset, defaults to 'medium' in single-stage mode, "
+            "or 'low' (stage 1) / 'high' (stage 2) when --two-stage is enabled."
+        ),
     )
     parser.add_argument(
         "--codex-extra-arg",
@@ -406,6 +420,9 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print additional progress information.",
     )
+    # Defaults
+    parser.set_defaults(two_stage=True)
+
     args = parser.parse_args()
     if args.contexts_per_run <= 0:
         parser.error("--contexts-per-run must be positive.")
@@ -1238,6 +1255,7 @@ def run_codex_exec(
     args: argparse.Namespace,
     *,
     model_override: Optional[str] = None,
+    reasoning_override: Optional[str] = None,
     label: str = "",
 ) -> str:
     prompt_path = run_dir / f"prompt{label}_chunk_{chunk_idx:02d}.txt"
@@ -1246,10 +1264,11 @@ def run_codex_exec(
 
     # Build command
     cmd = ["codex", "exec", "-", "--skip-git-repo-check"]
-    model = model_override or args.codex_model or "gpt-5"
+    model = model_override or args.codex_model or "gpt-5.1"
     cmd.extend(["--model", model])
-    if args.model_reasoning_effort:
-        cmd.extend(["-c", f"model_reasoning_effort={args.model_reasoning_effort}"])
+    reasoning = reasoning_override or args.model_reasoning_effort
+    if reasoning:
+        cmd.extend(["-c", f"model_reasoning_effort={reasoning}"])
 
     for extra in args.codex_extra_arg:
         if extra:
@@ -1440,12 +1459,14 @@ def main() -> None:
                 continue
 
             try:
+                stage1_reasoning = args.model_reasoning_effort or "low"
                 response_text_stage1 = run_codex_exec(
                     filter_prompt,
                     idx,
                     run_dir,
                     args,
                     model_override=args.codex_model_stage1,
+                    reasoning_override=stage1_reasoning,
                     label="_stage1",
                 )
 
@@ -1510,14 +1531,20 @@ def main() -> None:
             print(f"  (This may take 30-60 seconds depending on model and context size)")
 
         try:
-            # Choose appropriate model for stage 2
+            # Choose appropriate model and reasoning effort for stage 2
             stage2_model = args.codex_model_stage2 if args.two_stage else None
+            if args.two_stage:
+                stage2_reasoning = args.model_reasoning_effort or "high"
+            else:
+                stage2_reasoning = args.model_reasoning_effort or "medium"
+
             response_text = run_codex_exec(
                 prompt,
                 idx,
                 run_dir,
                 args,
                 model_override=stage2_model,
+                reasoning_override=stage2_reasoning,
                 label="",
             )
 
