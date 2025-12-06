@@ -23,6 +23,15 @@ from datetime import datetime
 from shiny import App, Inputs, Outputs, Session, reactive, render, ui
 import pandas as pd
 
+# Import AnkiConnect client
+try:
+    from anki_connect import AnkiConnectClient, AnkiConnectError
+    ANKI_CONNECT_AVAILABLE = True
+except ImportError:
+    ANKI_CONNECT_AVAILABLE = False
+    AnkiConnectClient = None
+    AnkiConnectError = Exception
+
 
 # ============================================================================
 # Data Loading & Management
@@ -483,8 +492,18 @@ app_ui = ui.page_fluid(
 
                 ui.div(
                     {"class": "stats-card"},
+                    ui.h4("AnkiConnect"),
+                    ui.output_ui("anki_status"),
+                    ui.input_action_button("btn_import_current", "Import Current Card to Anki", class_="btn-primary", width="100%"),
+                    ui.input_action_button("btn_import_accepted", "Import All Accepted to Anki", class_="btn-success", width="100%", style="margin-top: 10px;"),
+                    ui.input_checkbox("allow_duplicates", "Allow duplicate cards", value=False),
+                    ui.output_text("anki_message", inline=True),
+                ),
+
+                ui.div(
+                    {"class": "stats-card"},
                     ui.h4("Export"),
-                    ui.input_action_button("btn_export", "Export Accepted Cards", class_="btn-success", width="100%"),
+                    ui.input_action_button("btn_export", "Export Accepted Cards (JSON)", class_="btn-success", width="100%"),
                     ui.input_action_button("btn_export_feedback", "Export Feedback Data", class_="btn-info", width="100%", style="margin-top: 10px;"),
                     ui.output_text("export_message", inline=True),
                 ),
@@ -510,6 +529,9 @@ def server(input: Inputs, output: Outputs, session: Session):
     session_state = reactive.Value(None)
     current_card_index = reactive.Value(0)
     force_update = reactive.Value(0)
+
+    # AnkiConnect client (initialized once)
+    anki_client = AnkiConnectClient() if ANKI_CONNECT_AVAILABLE else None
 
     # Initialize run options
     @reactive.Effect
@@ -939,6 +961,146 @@ def server(input: Inputs, output: Outputs, session: Session):
             export_msg.set(f"✓ Exported {count} feedback records to {output_file.name}")
         else:
             export_msg.set("✗ No session loaded")
+
+    # AnkiConnect functionality
+    anki_msg = reactive.Value("")
+
+    @output
+    @render.ui
+    def anki_status():
+        """Display AnkiConnect connection status."""
+        if not ANKI_CONNECT_AVAILABLE:
+            return ui.div(
+                {"style": "color: orange; font-size: 0.9em; margin-bottom: 10px;"},
+                "⚠ AnkiConnect module not available"
+            )
+
+        if not anki_client:
+            return ui.div(
+                {"style": "color: red; font-size: 0.9em; margin-bottom: 10px;"},
+                "✗ AnkiConnect not initialized"
+            )
+
+        try:
+            if anki_client.check_connection():
+                version = anki_client.get_version()
+                return ui.div(
+                    {"style": "color: green; font-size: 0.9em; margin-bottom: 10px;"},
+                    f"✓ Connected (v{version})"
+                )
+            else:
+                return ui.div(
+                    {"style": "color: red; font-size: 0.9em; margin-bottom: 10px;"},
+                    "✗ Anki not running"
+                )
+        except:
+            return ui.div(
+                {"style": "color: red; font-size: 0.9em; margin-bottom: 10px;"},
+                "✗ Cannot connect to Anki"
+            )
+
+    @output
+    @render.text
+    def anki_message():
+        return anki_msg.get()
+
+    @reactive.Effect
+    @reactive.event(input.btn_import_current)
+    def _():
+        """Import current card to Anki."""
+        if not anki_client:
+            anki_msg.set("✗ AnkiConnect not available")
+            return
+
+        card = get_current_card()
+        if not card:
+            anki_msg.set("✗ No card to import")
+            return
+
+        try:
+            # Check connection
+            if not anki_client.check_connection():
+                anki_msg.set("✗ Anki is not running. Please start Anki.")
+                return
+
+            # Import card
+            note_id = anki_client.import_card(
+                card,
+                allow_duplicate=input.allow_duplicates()
+            )
+
+            if note_id:
+                anki_msg.set(f"✓ Imported to {card.get('deck', 'Default')} (ID: {note_id})")
+                # Mark as accepted if not already decided
+                idx = current_card_index.get()
+                session = session_state.get()
+                if session and idx not in session.decisions:
+                    session.record_decision(idx, 'accept', reason="Imported to Anki")
+                force_update.set(force_update.get() + 1)
+            else:
+                anki_msg.set("⚠ Card already exists in Anki (duplicate)")
+
+        except ConnectionError as e:
+            anki_msg.set(f"✗ Connection error: {str(e)[:50]}")
+        except AnkiConnectError as e:
+            anki_msg.set(f"✗ Anki error: {str(e)[:50]}")
+        except Exception as e:
+            anki_msg.set(f"✗ Error: {str(e)[:50]}")
+
+    @reactive.Effect
+    @reactive.event(input.btn_import_accepted)
+    def _():
+        """Import all accepted cards to Anki."""
+        if not anki_client:
+            anki_msg.set("✗ AnkiConnect not available")
+            return
+
+        session = session_state.get()
+        if not session:
+            anki_msg.set("✗ No session loaded")
+            return
+
+        # Collect accepted cards
+        accepted_cards = []
+        for idx, card in enumerate(session.cards):
+            decision = session.decisions.get(idx)
+            if decision and decision['action'] in ['accept', 'edit']:
+                # Use edited card if available
+                card_to_import = decision.get('edited_card', card)
+                accepted_cards.append(card_to_import)
+
+        if not accepted_cards:
+            anki_msg.set("⚠ No accepted cards to import")
+            return
+
+        try:
+            # Check connection
+            if not anki_client.check_connection():
+                anki_msg.set("✗ Anki is not running. Please start Anki.")
+                return
+
+            # Batch import
+            result = anki_client.import_cards_batch(
+                accepted_cards,
+                allow_duplicates=input.allow_duplicates(),
+                create_decks=True
+            )
+
+            # Display results
+            msg = f"✓ Imported {result['imported']} cards"
+            if result['duplicates'] > 0:
+                msg += f", {result['duplicates']} duplicates skipped"
+            if result['failed'] > 0:
+                msg += f", {result['failed']} failed"
+
+            anki_msg.set(msg)
+
+        except ConnectionError as e:
+            anki_msg.set(f"✗ Connection error: {str(e)[:50]}")
+        except AnkiConnectError as e:
+            anki_msg.set(f"✗ Anki error: {str(e)[:50]}")
+        except Exception as e:
+            anki_msg.set(f"✗ Error: {str(e)[:50]}")
 
 
 # ============================================================================
