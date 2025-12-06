@@ -1537,8 +1537,12 @@ for chunk in chunks:
 
 **Improve card quality**
 
-1.  [ ] Two-stage LLM pipeline (cost reduction)
-2.  [ ] Semantic deduplication with embeddings
+1.  [x] Two-stage LLM pipeline (cost reduction)
+    - Implemented as optional `--two-stage` mode
+    - Stage 1: fast filter model (`gpt-5.1 low` by default)
+    - Stage 2: full card generation model (`gpt-5.1 high` by default)
+    - Still room for improvement: richer filter signals, cost/usage metrics
+2.  [x] Semantic deduplication with embeddings
 3.  [ ] Enhanced scoring heuristics
 4.  [ ] Quality validation & auto-fix
 5.  [ ] Configurable prompt templates

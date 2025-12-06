@@ -578,11 +578,14 @@ This project has **significant** planned enhancements documented in
 
 ### Highest Priority (from roadmap)
 
-1.  **Semantic deduplication** - Embeddings + FAISS/ChromaDB for better
-    duplicate detection
+1.  ~~**Semantic deduplication**~~ ✅ **INITIAL IMPLEMENTATION**
+    - Hybrid string + embedding-based dedup (see `SemanticCardIndex`)
+    - CLI: `--dedup-method semantic|hybrid`, `--semantic-*` flags
 2.  ~~**Interactive review mode**~~ ✅ **DONE!**
-3.  **Two-stage LLM pipeline** - Fast pre-filter + slow generation (70%
-    cost reduction)
+3.  **Two-stage LLM pipeline** - Fast pre-filter + slow generation
+    - Initial implementation available via `--two-stage`
+    - Stage 1: filter contexts (`gpt-5.1 low` by default)
+    - Stage 2: generate cards (`gpt-5.1 high` by default)
 4.  ~~**AnkiConnect integration**~~ ✅ **DONE!**
 5.  **Active learning** - Feedback loop to improve quality over time
 
