@@ -176,10 +176,11 @@ Start studying! 🎓
 
 ### Code
 
-- **Total Python lines**: 2,858
+- **Total Python lines**: ~3,200
   - `auto_anki_agent.py`: 1,304 lines
   - `anki_review_ui.py`: 1,118 lines
   - `anki_connect.py`: 436 lines
+  - `auto_anki/progress.py`: ~350 lines
 
 ### Documentation
 
@@ -218,6 +219,14 @@ Start studying! 🎓
 - ✅ Duplicate detection
 - ✅ Auto-create decks
 - ✅ Nested deck support
+
+**Progress Dashboard:**
+- ✅ TUI-based progress visualization (`auto-anki-progress`)
+- ✅ Weekly breakdown of conversations processed vs. available
+- ✅ Cumulative progress tracking with percentage
+- ✅ Activity streak tracking (current and longest)
+- ✅ Cards generated per week
+- ✅ JSON output mode for scripting
 
 ## Performance Metrics
 
@@ -265,6 +274,9 @@ python3 auto_anki_agent.py --date-range 2025-10 --max-contexts 10 --verbose
 ./launch_ui.sh
 
 # 6. Review and import!
+
+# 7. Track your progress
+uv run auto-anki-progress
 ```
 
 ### Daily Workflow
@@ -389,7 +401,12 @@ These are documented in FUTURE_DIRECTIONS.md with detailed proposals.
    - Parallel card generation (3 workers)
    - Heuristics optional (`--use-filter-heuristics`)
 
-3. **Cloze Card Support**
+3. ~~**Progress Dashboard**~~ ✅ **DONE!**
+   - TUI-based progress visualization (`auto-anki-progress`)
+   - Weekly stats, streak tracking, cumulative progress
+   - JSON output mode for scripting
+
+4. **Cloze Card Support**
    - Detect cloze-worthy content
    - Generate cloze deletion cards
    - Support Anki cloze syntax
@@ -439,6 +456,7 @@ The Auto Anki Agent project is **production-ready** and **feature-complete** for
 ✅ Direct Anki import (30-60x faster)
 ✅ Advanced filtering and bulk operations
 ✅ Data-driven feedback for continuous improvement
+✅ Progress tracking with TUI dashboard
 
 **The project is ready for daily use!** 🚀
 

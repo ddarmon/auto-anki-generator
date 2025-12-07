@@ -368,6 +368,45 @@ shiny run anki_review_ui.py
 - `UI_ENHANCEMENTS_SUMMARY.md` - Technical enhancement details
 - `INTEGRATION_COMPLETE.md` - Integration summary and quick start
 
+## Progress Dashboard
+
+Track your conversation processing progress with a beautiful TUI dashboard:
+
+```bash
+# Show progress for last 12 weeks
+uv run auto-anki-progress
+
+# Show more history
+uv run auto-anki-progress --weeks 24
+
+# JSON output for scripting
+uv run auto-anki-progress --json
+```
+
+### Features
+
+- **Overall progress bar** - See total completion percentage
+- **Weekly breakdown** - Conversations processed vs. available per week
+- **Activity streak** - Track consecutive weeks of activity
+- **Cards generated** - See card output per week
+
+### Sample Output
+
+```
+╭─────────────────── Auto-Anki Progress ───────────────────╮
+│  Overall: [████████░░░░░░░░░░░░░░░░░░░░░░] 42.3%         │
+│  127 / 300 conversations  |  342 cards generated         │
+│                                                          │
+│  Activity: . . . . # # # . # # # #                       │
+│  Current streak: 4 weeks  |  Longest: 5 weeks            │
+│                                                          │
+│  Week         │ Done │ Total │ Progress  │ Cards         │
+│  Dec 2-8      │   12 │    18 │ [=====]   │    28         │
+│  Nov 25-Dec 1 │   24 │    24 │ [======]  │    52         │
+│  ...                                                     │
+╰──────────────────────────────────────────────────────────╯
+```
+
 ## Future Enhancements
 
 - [x] ~~Automatic HTML card import via AnkiConnect~~ ✅ **DONE!**
@@ -375,6 +414,7 @@ shiny run anki_review_ui.py
 - [x] ~~Conversation-level processing~~ ✅ **DONE!** (LLM sees full learning journey)
 - [x] ~~Two-stage LLM pipeline~~ ✅ **DONE!** (Fast filter + slow generation)
 - [x] ~~Test suite~~ ✅ **DONE!** (97 tests covering core functions)
+- [x] ~~Progress dashboard~~ ✅ **DONE!** (TUI with weekly stats + streak tracking)
 - [ ] Tag taxonomy management
 - [ ] Multi-deck routing logic with ML
 - [ ] Topic distribution visualization

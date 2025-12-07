@@ -29,6 +29,13 @@ Manually copy/paste cards you want to keep from the markdown file into your Anki
 
 ## Common Commands
 
+### View Processing Progress
+
+```bash
+uv run auto-anki-progress           # Show last 12 weeks
+uv run auto-anki-progress --weeks 24  # Show more history
+```
+
 ### Process Specific Month
 
 ```bash
@@ -129,7 +136,8 @@ collections/
 │   ├── contexts.py             # Conversation & ChatTurn dataclasses
 │   ├── codex.py                # Prompt builders
 │   ├── dedup.py                # Deduplication
-│   └── state.py                # State tracking (v2 schema)
+│   ├── state.py                # State tracking (v2 schema)
+│   └── progress.py             # TUI progress dashboard
 ├── README_AUTO_ANKI.md         # Full documentation
 ├── QUICK_START.md              # This file
 ├── .auto_anki_agent_state.json # Processing state (v2 with seen_conversations)

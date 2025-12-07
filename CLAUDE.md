@@ -268,7 +268,8 @@ Generates human-readable card preview.
     │   ├── contexts.py              # Chat harvesting, scoring, ChatTurn
     │   ├── dedup.py                 # String + semantic dedup (FAISS/embeddings)
     │   ├── codex.py                 # Prompt builders, two-stage pipeline, parsing
-    │   └── state.py                 # StateTracker, run directory helpers
+    │   ├── state.py                 # StateTracker, run directory helpers
+    │   └── progress.py              # TUI progress dashboard (`auto-anki-progress`)
     ├── tests/                       # Test suite (pytest)
     │   ├── conftest.py              # Shared fixtures
     │   ├── test_scoring.py          # Tests for detect_signals, extract_key_terms
@@ -317,6 +318,7 @@ Generates human-readable card preview.
 4.  `auto_anki/dedup.py` - `SemanticCardIndex`, `prune_conversations()`
 5.  `auto_anki/codex.py` - `build_conversation_prompt()`, `run_codex_pipeline()`
 6.  `auto_anki/state.py` - `StateTracker`, state migration, `ensure_run_dir()`
+7.  `auto_anki/progress.py` - TUI progress dashboard, weekly stats, streak tracking
 
 **Key configuration points (via CLI defaults):**
 
@@ -541,6 +543,14 @@ python3 auto_anki_agent.py \
   --max-contexts 50 \
   --contexts-per-run 10 \
   --codex-model gpt-5-codex
+```
+
+**View processing progress:**
+
+``` bash
+uv run auto-anki-progress           # Show last 12 weeks
+uv run auto-anki-progress --weeks 24  # Show more history
+uv run auto-anki-progress --json    # Machine-readable output
 ```
 
 ### Important Flags
@@ -846,6 +856,8 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 -   `Conversation` - Full conversation with turns + metadata
 -   `ChatTurn` - Single exchange within conversation
 -   `StateTracker` - Incremental processing state (v2 schema)
+-   `WeeklyStats` - Progress stats for a single week (progress.py)
+-   `ProgressSummary` - Overall progress summary (progress.py)
 
 ### Key Constants
 
@@ -884,11 +896,13 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 **Last updated**: 2025-12-07
 
 **Project status**: Production-ready with conversation-level processing,
-semantic deduplication, two-stage pipeline, parallel execution, and interactive review UI.
+semantic deduplication, two-stage pipeline, parallel execution, interactive review UI,
+and TUI progress dashboard.
 
-**Current version**: Modular Python package with CLI entrypoint
+**Current version**: Modular Python package with CLI entrypoints (`auto-anki`, `auto-anki-progress`)
 
 **Recent additions**:
+-   TUI progress dashboard (`auto-anki-progress`) with weekly stats, streak tracking
 -   Heuristics OFF by default - LLM-only filtering via Stage 1
 -   Stage 1 receives full conversations (not truncated)
 -   Stage 2 runs in parallel (3 concurrent workers, ~3x speedup)
