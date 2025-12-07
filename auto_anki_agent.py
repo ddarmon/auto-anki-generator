@@ -42,8 +42,6 @@ from auto_anki.contexts import (
     harvest_conversations,
 )
 from auto_anki.codex import (
-    build_codex_filter_prompt,
-    build_codex_prompt,
     build_conversation_prompt,
     build_conversation_filter_prompt,
     chunked,

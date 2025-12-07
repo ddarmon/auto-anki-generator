@@ -26,8 +26,14 @@ def build_codex_prompt(
     args: Any,
 ) -> str:
     """
-    Build the stage-2 card generation prompt.
+    DEPRECATED: per-turn Codex pipeline has been replaced by the
+    conversation-level pipeline driven by `build_conversation_prompt`.
+    This function is kept only for backward compatibility and should
+    not be used in new code.
     """
+    raise RuntimeError(
+        "build_codex_prompt is deprecated; use the conversation-level pipeline instead."
+    )
     cards_payload = [
         {
             "deck": card.deck,
@@ -110,15 +116,19 @@ def build_codex_prompt(
         The most important rule: **Each card must isolate the smallest useful piece of information.**
         - One main idea per card
         - Questions should be precise and unambiguous
-        - Answers should normally be 1–3 short sentences
+        - Answer length should scale with concept difficulty:
+          - Simple facts (names, acronyms, commands): a word or short phrase is fine
+          - Definitions and concepts: 1–3 sentences
+          - Derivations, proofs, or multi-step explanations: as long as needed for clarity,
+            but prefer splitting into multiple cards when possible
         - Use very small lists (2–4 items) only when the relationship between the items is the key concept
         - NEVER ask the user to recall long unordered lists; break them into multiple cards instead
-        - If an answer wants to become a long paragraph or long list, split it into several cards
-          (e.g., one card per property or fact)
 
         ## Front Style (Question Side)
 
         - Default to natural-language questions ("What…", "How…", "Why…", "Where…", "When…", "In X, what is…").
+        - Use "Where is..." for cards about locating documents, files, configurations, or resources.
+        - Use "What does X stand for?" for acronym expansion cards.
         - Only use non-question fronts when the natural form is "concept → definition"
           (e.g., a term and its meaning).
         - Optimize wording: remove filler words and keep the question as short and clear as possible.
@@ -131,39 +141,33 @@ def build_codex_prompt(
 
         - Give a concise, self-contained explanation that directly answers the front.
         - Lead with the key idea or definition, then add a brief elaboration or example if helpful.
-        - Prefer short prose over heavy formatting; small numbered lists are fine for 2–4 clear steps
-          or items.
+        - Small numbered lists are fine for 2–4 clear steps or items.
         - Use vivid, concrete examples or mnemonics sparingly to make abstract ideas memorable.
         - When two concepts are easily confused, include cards that explicitly distinguish them
           (combat interference).
+        - For cards derived from specific sources, include a reference line at the end:
+          "Reference: path/to/source" or "Reference: URL"
         - For volatile facts (statistics, time-sensitive data), include a brief source or date when
           available, e.g. "(Source: US Census Bureau, 2021)".
 
         ## Math and Notation
 
-        - Use LaTeX-style math inline (e.g., `\\(x^2 + y^2 = z^2\\)` or
-          `\\[ \\int_0^1 f(x) \\, dx \\]`) when needed.
-        - Keep formulas embedded in explanatory sentences instead of as isolated blocks.
-        - You may use LaTeX like `\\mathbf{A}` for Roman letter vectors/matrices or
-          `\\boldsymbol{\\alpha}` for Greek letters when appropriate.
+        - ALWAYS typeset mathematical expressions using LaTeX, not plain ASCII math.
+          When you see formulas like `x^2 + y^2 = z^2`, `sum_{t=1}^T C_t / (1 + r)^t`,
+          or `P(X = x_0) = 0`, rewrite them as LaTeX, e.g. `\\(x^2 + y^2 = z^2\\)` or
+          `\\(\\sum_{t=1}^T C_t / (1 + r)^t\\)`.
+        - Use inline math `\\( ... \\)` for inline formulas and display math
+          `\\[ ... \\]` for equations or formulas that should stand on their own lines.
+        - Use LaTeX-like `\\mathbf{A}` for Roman letter vectors/matrices and
+          `\\boldsymbol{\\alpha}` for Greek letter vectors/matrices when appropriate.
         - Do NOT wrap math or answers in code fences.
-
-        ## Cloze Cards
-
-        - Use `card_style = "cloze"` for short facts, definitions, names, and items in a sequence
-          that can be hidden inline.
-        - On the front, use `[...]` to mark the part to be recalled within a full sentence.
-        - On the back, restate the full sentence with the missing part filled in, and bold the
-          recalled phrase if appropriate.
-        - For ordered processes, you may create overlapping cloze-style cards that walk through
-          the sequence step by step.
 
         ## Difficult Information Types
 
         - **Unordered sets (lists)**: NEVER ask the user to list more than 2–3 items. Instead,
           create one card per item or per logically grouped subset.
-        - **Ordered lists / processes**: Prefer multiple small cards or overlapping cloze-style
-          cards over a single big "list all the steps" card.
+        - **Ordered lists / processes**: Prefer multiple small cards over a single big
+          "list all the steps" card.
         - **Visual concepts**: If a picture would meaningfully aid understanding, you may add a
           short placeholder hint in the back like "[Image: diagram of a plant cell]".
 
@@ -177,18 +181,10 @@ def build_codex_prompt(
         - When introducing an acronym, consider writing the full term first, e.g.
           "**Application Programming Interface (API)**".
 
-        ## Card Formats
+        ## Card Format
 
-        Use the format that best fits the information:
-
-        1. **Question/Answer (basic)**: Default format for most concepts. Question on the front,
-           concise explanation on the back.
-        2. **Cloze Deletion (cloze)**: For short, well-formed sentences where a single phrase
-           can be hidden with `[...]` and recalled.
-        3. **List**: Use only when the structure or comparison between a small number of items (2–4)
-           is the main concept.
-        4. **Multi**: Rare; only when a tightly related cluster of subfacts must be kept together
-           for the card to make sense and cannot be cleanly split.
+        Use **Question/Answer (basic)** format: Question on the front, explanation on the back.
+        This is the only format used in this deck.
 
         ## Your Task
 
@@ -196,7 +192,8 @@ def build_codex_prompt(
         1. Decide if it contains learning-worthy knowledge (not trivial, not already covered).
         2. Check against `existing_cards` to avoid duplicates.
         3. If justified, create one or MORE atomic cards following the guidelines above.
-        4. Choose an appropriate deck and tags.
+        4. Choose an appropriate deck. Tags are optional—only add them when genuinely useful
+           for filtering (most cards need no tags).
         5. Provide a confidence score and brief notes explaining why the card matters or how it
            might be used.
 
@@ -213,7 +210,7 @@ def build_codex_prompt(
         - NO explanatory text before or after the JSON
         - NO comments inside the JSON
         - START your response with `{` and END with `}`
-        - `card_style` should be: basic, cloze, list, or multi
+        - `card_style` should be: basic
         - `confidence`: 0.0-1.0
 
         YOUR ENTIRE RESPONSE MUST BE VALID, PARSEABLE JSON.
@@ -879,7 +876,6 @@ def build_conversation_prompt(
         "candidate_conversations": conversations_payload,
         "output_contract": contract,
     }
-
     instructions = textwrap.dedent(
         """
         CRITICAL: You MUST respond with ONLY valid JSON matching the output_contract below.
@@ -898,24 +894,40 @@ def build_conversation_prompt(
 
         ## Core Philosophy
 
-        1. **Understand First, Memorize Second**: Each card should reflect a clear mental model
-        2. **Build Upon the Basics**: Order cards logically, foundational concepts first
-        3. **Minimum Information Principle**: Each card = smallest possible piece of information
+        1. **Understand First, Memorize Second**: First form a coherent mental model of the topic.
+           Cards should reflect this understanding, flowing logically from general to specific.
+        2. **Build Upon the Basics**: Order cards logically: foundational concepts and definitions
+           first, details and edge cases later. Each card must be self-contained but also fit into
+           a sensible progression within its conversation.
+        3. **Match the Existing Deck Style**: Prefer natural-language question fronts and short,
+           focused explanations on the back, like a carefully hand-crafted Q/A deck.
+
+        ## Minimum Information Principle
+
+        The most important rule: **Each card must isolate the smallest useful piece of information.**
+        - One main idea per card
+        - Questions should be precise and unambiguous
+        - Answer length should scale with concept difficulty:
+          - Simple facts (names, acronyms, commands): a word or short phrase is fine
+          - Definitions and concepts: 1–3 sentences
+          - Derivations, proofs, or multi-step explanations: split into multiple cards when possible
+        - Use very small lists (2–4 items) only when the relationship between the items is the key concept
+        - NEVER ask the user to recall long unordered lists; break them into multiple cards instead
 
         ## Guidelines for Processing Conversations
 
-        - **Read the entire conversation first** before deciding on cards
-        - **Prioritize final understanding** over intermediate confusion
-        - Use the `turn_index` to link cards to specific exchanges
-        - Use `depends_on` to indicate card ordering for learning
-        - If `aggregate_signals.duplicate_turns` is set, those turns are already covered - skip them
+        - **Read the entire conversation first** before deciding on cards.
+        - **Prioritize final understanding** over intermediate confusion.
+        - Use the `turn_index` to link cards to specific exchanges.
+        - Use `depends_on` to indicate card ordering for learning when cards naturally build on each other.
+        - If `aggregate_signals.duplicate_turns` is set, those turns are already covered—skip them.
 
         ## Red Flags to Skip
 
         - User says "wait, that's wrong" or "actually I misunderstood"
         - Assistant corrects earlier information ("I should clarify...")
         - Conversation degenerates into debugging without resolution
-        - Final exchange shows user still confused
+        - Final exchange shows the user still confused
 
         ## Green Flags for High-Quality Cards
 
@@ -924,10 +936,87 @@ def build_conversation_prompt(
         - Multiple related concepts explained coherently
         - Concrete examples that crystallize understanding
 
+        ## Front Style (Question Side)
+
+        - Default to natural-language questions ("What…", "How…", "Why…", "Where…", "When…", "In X, what is…").
+        - Use "Where is..." for cards about locating documents, files, configurations, or resources.
+        - Use "What does X stand for?" for acronym expansion cards.
+        - Only use non-question fronts when the natural form is "concept → definition" (e.g., a term and its meaning).
+        - Optimize wording: remove filler words and keep the question as short and clear as possible.
+        - For ambiguous acronyms or overloaded terms, add a brief context tag at the start, e.g.
+          "(Biochemistry) What does GRE stand for?"
+        - Avoid referring to the chat or the model (no "in the conversation above" or "the assistant said").
+        - Make the front fully self-contained so it still makes sense outside this transcript.
+
+        ## Back Style (Answer Side)
+
+        - Give a concise, self-contained explanation that directly answers the front.
+        - Lead with the key idea or definition, then add a brief elaboration or example if helpful.
+        - Small numbered lists are fine for 2–4 clear steps or items.
+        - Use vivid, concrete examples or mnemonics sparingly to make abstract ideas memorable.
+        - When two concepts are easily confused, include cards that explicitly distinguish them
+          (combat interference).
+        - For cards derived from specific sources, include a reference line at the end:
+          "Reference: path/to/source" or "Reference: URL".
+        - For volatile facts (statistics, time-sensitive data), include a brief source or date when
+          available, e.g. "(Source: US Census Bureau, 2021)".
+
+        ## Math and Notation
+
+        - ALWAYS typeset mathematical expressions using LaTeX, not plain ASCII math.
+          When you see formulas like `x^2 + y^2 = z^2`, `sum_{t=1}^T C_t / (1 + r)^t`,
+          or `P(X = x_0) = 0`, rewrite them as LaTeX, e.g. `\\(x^2 + y^2 = z^2\\)` or
+          `\\(\\sum_{t=1}^T C_t / (1 + r)^t\\)`.
+        - Use inline math `\\( ... \\)` for most formulas and display math `\\[ ... \\]`
+          only when the expression itself is the main focus of the card.
+        - Keep formulas embedded in explanatory sentences rather than as standalone blocks
+          when possible, and avoid code fences for math.
+        - You may use LaTeX like `\\mathbf{A}` for Roman letter vectors/matrices or
+          `\\boldsymbol{\\alpha}` for Greek letter vectors/matrices when appropriate.
+
+        ## Difficult Information Types
+
+        - **Unordered sets (lists)**: NEVER ask the user to list more than 2–3 items. Instead,
+          create one card per item or per logically grouped subset.
+        - **Ordered lists / processes**: Prefer multiple small cards or overlapping cloze-style
+          cards over a single big "list all the steps" card.
+        - **Visual concepts**: If a picture would meaningfully aid understanding, you may add a
+          short placeholder hint in the back like "[Image: diagram of a plant cell]".
+
+        ## Formatting Inside Cards
+
+        - Use **bold** (`**text**`) for keywords, definitions, or the precise part of the answer
+          to be recalled.
+        - Use `inline code` (`` `text` ``) for function names, variables, commands, or short code.
+        - Use code blocks only when multi-line code is central to the concept.
+        - Use blockquotes (`> text`) for direct quotes or important statements, when appropriate.
+        - When introducing an acronym, consider writing the full term first, e.g.
+          "**Application Programming Interface (API)**".
+
         ## Card Formats
 
-        1. **Question/Answer (basic)**: Default for most concepts
-        2. **Cloze Deletion**: Ideal for facts, definitions, vocabulary
+        1. **Question/Answer (basic)**: Default for most concepts—question on the front,
+           concise explanation on the back.
+        2. **Cloze Deletion (cloze)**: Ideal for short facts, definitions, names, and sequences
+           that can be hidden inline with `[...]` on the front and restated fully on the back.
+        3. **List**: Use only when a small comparison or grouped set of 2–4 items is the main
+           concept; avoid long laundry lists.
+
+        ## Your Task
+
+        For each `candidate_conversation`:
+        1. Decide which turns contain learning-worthy knowledge (not trivial, not already covered).
+        2. Check against `existing_cards` to avoid duplicates.
+        3. If justified, create one or MORE atomic cards following the guidelines above.
+        4. For each card, choose an appropriate deck, `card_style`, and (optionally) tags.
+        5. Provide a confidence score and brief notes explaining why the card matters or how it
+           might be used.
+
+        Before finalizing each card, mentally check:
+        - Does it follow the Minimum Information Principle?
+        - Is the question clear, specific, and unambiguous?
+        - Can the card be understood independently of the original conversation?
+        - Is the wording optimized for fast recall (no unnecessary words)?
 
         ## Output Requirements
 
@@ -1145,7 +1234,6 @@ def format_conversation_cards_as_markdown(
 
 __all__ = [
     "build_codex_prompt",
-    "build_codex_filter_prompt",
     "build_conversation_prompt",
     "build_conversation_filter_prompt",
     "run_codex_exec",

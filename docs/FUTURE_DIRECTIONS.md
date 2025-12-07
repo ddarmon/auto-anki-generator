@@ -555,7 +555,7 @@ observer.start()
 
 ### 18. Configurable Prompt Templates
 
-**Current limitation**: Hardcoded prompt in `build_codex_prompt()`
+**Current limitation**: Hardcoded prompt in `build_conversation_prompt()`
 
 **Proposal**: YAML-based prompt configuration
 

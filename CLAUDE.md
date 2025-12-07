@@ -378,7 +378,7 @@ Generates human-readable card preview.
 
 ### Modifying the Codex Prompt
 
-**Location:** `build_codex_prompt()` function
+**Location:** `build_conversation_prompt()` function (conversation-level pipeline)
 
 **Sections to modify:**
 
@@ -785,7 +785,7 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 
 -   Scoring logic: `detect_signals()`
 -   Deduplication: `deduplicate()`
--   Prompt construction: `build_codex_prompt()`
+-   Prompt construction: `build_conversation_prompt()`
 -   Response parsing: `call_codex_exec()`, `json_repair`
 
 ### When Optimizing
