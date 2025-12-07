@@ -1,6 +1,6 @@
 # Auto Anki Agent - Project Status
 
-**Date**: 2025-12-06
+**Date**: 2025-12-07
 **Status**: ✅ Production Ready
 
 ## Executive Summary
@@ -41,10 +41,12 @@ Start studying! 🎓
 
 **What it does:**
 - Harvests ChatGPT conversation exports
-- Scores contexts using heuristics
 - Deduplicates against existing Anki cards
+- Two-stage LLM pipeline: fast filter → parallel card generation
 - Uses LLM to generate high-quality flashcards
 - Outputs proposed cards to JSON and Markdown
+
+**Note**: Heuristic scoring is optional (`--use-filter-heuristics`). By default, the Stage 1 LLM judges quality directly.
 
 **Stats:**
 - Single-file CLI entrypoint: `auto_anki_agent.py` (now mostly orchestration)
@@ -188,7 +190,10 @@ Start studying! 🎓
 ### Features
 
 **Card Generation:**
-- ✅ 10+ heuristic signals
+- ✅ Two-stage LLM pipeline (default): Stage 1 filter → Stage 2 generation
+- ✅ Parallel Stage 2 execution (3 concurrent workers)
+- ✅ Full conversations sent to Stage 1 (LLM judges quality directly)
+- ✅ Heuristic signals (optional, via `--use-filter-heuristics`)
 - ✅ Date range filtering
 - ✅ State-based incremental processing
 - ✅ **Hybrid deduplication (default)** - semantic + string matching
@@ -345,8 +350,9 @@ $ ./launch_ui.sh
    - For best results: `uv pip install -e ".[semantic]"`
    - Override: `--dedup-method {string,semantic,hybrid}`
 
-4. **Single LLM model** - Uses one model for all generation
-   - Future: Two-stage pipeline (fast filter + slow generation)
+4. ~~**Single LLM model**~~ ✅ **TWO-STAGE PIPELINE** - Fast filter + parallel card generation
+   - Stage 1: `gpt-5.1` with low reasoning effort
+   - Stage 2: `gpt-5.1` with high reasoning effort (3 parallel workers)
 
 5. **Manual quality assessment** - User reviews all cards
    - Future: Active learning, quality prediction
@@ -378,10 +384,10 @@ These are documented in FUTURE_DIRECTIONS.md with detailed proposals.
    - **FAISS vector database** for O(1) similarity search
    - Persistent embedding cache (7x speedup on subsequent runs)
 
-2. **Two-Stage LLM Pipeline** (High Priority)
-   - Fast pre-filter with small model
-   - Slow generation with large model
-   - 70% cost reduction estimated
+2. ~~**Two-Stage LLM Pipeline**~~ ✅ **DONE!**
+   - Fast pre-filter with `gpt-5.1` (low reasoning effort)
+   - Parallel card generation (3 workers)
+   - Heuristics optional (`--use-filter-heuristics`)
 
 3. **Cloze Card Support**
    - Detect cloze-worthy content
@@ -398,6 +404,11 @@ These are documented in FUTURE_DIRECTIONS.md with detailed proposals.
    - Extract images from conversations
    - Include in card backs
    - Support audio clips
+
+6. **Direct Card Reading via AnkiConnect** (Proposed)
+   - Read existing cards from Anki instead of HTML exports
+   - Configure specific decks to monitor
+   - Real-time deduplication against live deck
 
 See FUTURE_DIRECTIONS.md for detailed proposals.
 
@@ -434,8 +445,8 @@ The Auto Anki Agent project is **production-ready** and **feature-complete** for
 ---
 
 **Status**: Production Ready ✅
-**Version**: 2.0 (with AnkiConnect)
-**Last Updated**: 2025-12-06
+**Version**: 2.1 (with parallel Stage 2)
+**Last Updated**: 2025-12-07
 **Documentation**: Complete ✅
 **Testing**: Passed ✅
 **Ready for**: Daily use, further enhancements

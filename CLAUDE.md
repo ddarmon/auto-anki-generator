@@ -39,7 +39,7 @@ generation to an LLM "decision layer" that understands:
        ├─ Split long conversations at topic boundaries
        └─ Apply filters: DateRangeFilter, StateTracker
 
-    2. SCORING PHASE
+    2. SCORING PHASE (optional, requires --use-filter-heuristics)
        ├─ Aggregate scoring across conversation turns
        │  ├─ Question signals (what/why/how)
        │  ├─ Definition signals (is defined as, stands for)
@@ -47,6 +47,7 @@ generation to an LLM "decision layer" that understands:
        │  └─ Quality signals (length, complexity)
        ├─ Extract key topics from all turns
        └─ Threshold filtering (min_score on aggregate)
+       NOTE: By default, heuristics are OFF - all conversations go to Stage 1 LLM
 
     3. DEDUPLICATION PHASE
        ├─ Conversation-level deduplication
@@ -64,14 +65,17 @@ generation to an LLM "decision layer" that understands:
        │  └─ Full conversations with all turns
        └─ Cap total conversations (max_contexts)
 
-    5. CODEX PHASE
-       ├─ Call `codex exec` with JSON contract
-       ├─ LLM sees full learning journey:
-       │  ├─ Follow-up questions (indicates confusion)
-       │  ├─ Corrections in later turns
-       │  └─ Topic evolution across turns
-       ├─ LLM decides: create cards / skip turns / note insights
-       └─ Cards linked to specific turns via (conversation_id, turn_index)
+    5. TWO-STAGE CODEX PHASE
+       ├─ STAGE 1: LLM Filter (fast, GPT-5.1 Low)
+       │  ├─ Receives FULL conversations (not truncated)
+       │  ├─ LLM judges quality directly (no heuristic scores)
+       │  └─ Decides: keep or skip each conversation
+       ├─ STAGE 2: Card Generation (parallel, 3 workers)
+       │  ├─ Call `codex exec` with JSON contract
+       │  ├─ LLM sees full learning journey
+       │  ├─ LLM decides: create cards / skip turns / note insights
+       │  └─ Cards linked to specific turns via (conversation_id, turn_index)
+       └─ Batches processed in parallel for ~3x speedup
 
     6. OUTPUT PHASE
        ├─ Save artifacts to run directory
@@ -180,7 +184,10 @@ Walks chat export directory and extracts full conversations.
 
 #### `detect_signals(user_text, assistant_text) -> Tuple[float, Dict]`
 
-Heuristic scoring function that identifies quality signals:
+Heuristic scoring function that identifies quality signals.
+
+**NOTE:** Only used when `--use-filter-heuristics` flag is enabled.
+By default, heuristics are OFF and all conversations go directly to Stage 1 LLM filter.
 
 **Positive signals:**
 
@@ -306,11 +313,13 @@ Generates human-readable card preview.
 
 -   `DEFAULT_MAX_CONTEXTS = 24` - conversations per run
 -   `DEFAULT_CONTEXTS_PER_RUN = 8` - batch size
--   `DEFAULT_MIN_SCORE = 1.2` - quality threshold (aggregate score)
+-   `DEFAULT_MIN_SCORE = 1.2` - quality threshold (only with `--use-filter-heuristics`)
 -   `DEFAULT_SIMILARITY_THRESHOLD = 0.82` - string dedup threshold
 -   `DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD = 0.85` - semantic dedup threshold
 -   `--conversation-max-turns = 10` - split conversations longer than this
 -   `--conversation-max-chars = 8000` - split conversations larger than this
+-   `--use-filter-heuristics` - OFF by default (LLM-only filtering)
+-   Stage 2 parallel workers: 3 concurrent (hardcoded)
 
 ### Debugging a Run
 
@@ -339,6 +348,8 @@ Generates human-readable card preview.
 
 ### Adding a New Heuristic Signal
 
+**NOTE:** Heuristics are OFF by default. Only relevant when using `--use-filter-heuristics`.
+
 1.  Add detection logic to `detect_signals()`:
 
     ``` python
@@ -354,7 +365,7 @@ Generates human-readable card preview.
     score += 0.6 * signals['has_examples']
     ```
 
-3.  Test with `--dry-run` to see impact on scoring
+3.  Test with `--use-filter-heuristics --dry-run` to see impact on scoring
 
 ### Modifying the Codex Prompt
 
@@ -787,10 +798,12 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 
 -   `DEFAULT_MAX_CONTEXTS = 24` - conversations per run
 -   `DEFAULT_CONTEXTS_PER_RUN = 8` - batch size
--   `DEFAULT_MIN_SCORE = 1.2` - aggregate score threshold
+-   `DEFAULT_MIN_SCORE = 1.2` - aggregate score threshold (only with `--use-filter-heuristics`)
 -   `DEFAULT_SIMILARITY_THRESHOLD = 0.82`
 -   `--conversation-max-turns = 10`
 -   `--conversation-max-chars = 8000`
+-   `--use-filter-heuristics` - OFF by default
+-   Stage 2 parallel workers: 3
 
 ## Questions to Ask When Working on This Project
 
@@ -815,17 +828,18 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 
 ------------------------------------------------------------------------
 
-**Last updated**: 2025-12-06
+**Last updated**: 2025-12-07
 
 **Project status**: Production-ready with conversation-level processing,
-semantic deduplication, two-stage pipeline, and interactive review UI.
+semantic deduplication, two-stage pipeline, parallel execution, and interactive review UI.
 
 **Current version**: Modular Python package with CLI entrypoint
 
 **Recent additions**:
--   Conversation-level processing (LLM sees full learning journey)
--   State schema v2 with automatic migration
--   Topic-boundary splitting for long conversations
+-   Heuristics OFF by default - LLM-only filtering via Stage 1
+-   Stage 1 receives full conversations (not truncated)
+-   Stage 2 runs in parallel (3 concurrent workers, ~3x speedup)
+-   `--use-filter-heuristics` flag to enable optional heuristic pre-filtering
 
 **Future vision**: Intelligent, adaptive learning companion with plugin
 architecture and active learning capabilities.

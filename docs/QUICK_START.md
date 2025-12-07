@@ -92,20 +92,25 @@ Minimal example:
 - Check if already processed: remove state file or don't use `--unprocessed-only`
 
 **Too many/few cards?**
-- Adjust scoring: `--min-score 1.5` (higher = more selective)
+- Enable heuristic filtering: `--use-filter-heuristics --min-score 1.5` (higher = more selective)
 - Adjust similarity:
   - String-based: `--similarity-threshold 0.9` (higher = less dedup)
   - Semantic: use `--dedup-method semantic` or `hybrid` plus
     `--semantic-similarity-threshold 0.9`
+
+**Note**: Heuristic filtering is OFF by default. The Stage 1 LLM judges quality directly.
 
 **Want to test without API calls?**
 ```bash
 python3 auto_anki_agent.py --dry-run --max-contexts 3 --verbose
 ```
 
-## What Gets Scored Highly?
+## What Gets Scored Highly? (Optional Heuristics)
 
-The script looks for conversations with:
+**Note**: Heuristic scoring is **OFF by default**. The Stage 1 LLM judges quality directly.
+Use `--use-filter-heuristics` to enable pre-LLM filtering.
+
+When enabled, the heuristics look for:
 - ❓ Questions (starts with what/why/how/when)
 - 📚 Definitions ("stands for", "is defined as", "refers to")
 - 📝 Bullet points and lists

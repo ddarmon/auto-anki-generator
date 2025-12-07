@@ -16,26 +16,29 @@ The system is now production-ready with major features implemented:
 -   **Conversation-level processing**: LLM sees full learning journey
 
 ### 🚧 Remaining Opportunities
--   **Performance**: Sequential processing (parallel processing not yet implemented)
+-   **Performance**: Stage 2 now parallelized; further optimization possible
 -   **Active learning**: No feedback loop to improve quality over time
 -   **Plugin architecture**: Not yet extensible for custom scorers/parsers
 
 ## Performance & Scalability
 
-### 1. Parallel Processing Architecture
+### 1. Parallel Processing Architecture ✅ PARTIAL
 
-**Current bottleneck**: Sequential file parsing and context processing
+**Status**: Stage 2 (card generation) now runs in parallel with 3 concurrent workers.
 
-**Proposal**:
+**What's implemented**:
+-   `ThreadPoolExecutor` with 3 workers for Stage 2 batches
+-   Stage 1 (filter) remains sequential (typically fast enough)
+-   Concurrent codex exec calls for card generation
 
+**Remaining opportunities**:
 -   Use `multiprocessing.Pool` for chat transcript parsing
 -   Parallelize deduplication checks across card database
--   Support concurrent codex exec calls with rate limiting
 -   Add progress tracking with `tqdm` for parallel operations
 
-**Impact**: 5-10x speedup on large runs (300+ files)
+**Impact**: Achieved ~3x speedup on Stage 2; further optimization possible for harvesting.
 
-**Implementation notes**:
+**Implementation example** (for future harvesting parallelization):
 
 ``` python
 from multiprocessing import Pool
@@ -139,14 +142,17 @@ CREATE INDEX idx_contexts_file ON seen_contexts(file_path);
 
 **What's implemented**:
 -   **Stage 1**: Fast filter using `gpt-5.1` with `model_reasoning_effort=low`
-    -   Filters conversations to keep only promising candidates
+    -   Receives **full conversations** (complete user prompts + assistant responses)
+    -   LLM judges quality directly (no heuristic scores in prompt)
+    -   Heuristic pre-filtering available via `--use-filter-heuristics` (off by default)
     -   CLI: `--codex-model-stage1`
 -   **Stage 2**: Card generation using `gpt-5.1` with `model_reasoning_effort=high`
+    -   **Parallel execution** with 3 concurrent workers via `ThreadPoolExecutor`
     -   Full card generation with quality prompts
     -   CLI: `--codex-model-stage2`
 -   CLI flags: `--two-stage` (default), `--single-stage` to disable
 
-**Impact**: Significant cost reduction by filtering before expensive generation
+**Impact**: Significant cost reduction by filtering before expensive generation; ~3x faster Stage 2 via parallelization
 
 ### 5. Context Clustering & Topic Modeling (Partially Addressed)
 
@@ -1460,8 +1466,8 @@ for chunk in chunks:
 
 **High impact, low effort**
 
-1.  [ ] Parallel deduplication (5-10x speedup)
-2.  [ ] Interactive review mode (massive UX improvement)
+1.  [x] Parallel Stage 2 execution ✅ (3 concurrent workers)
+2.  [x] Interactive review mode ✅ (Shiny UI)
 3.  [ ] Better error recovery (robust JSON parsing)
 4.  [ ] Cost tracking & budget limits
 5.  [ ] Progress indicators with tqdm
@@ -1470,14 +1476,14 @@ for chunk in chunks:
 
 **Improve card quality**
 
-1.  [x] Two-stage LLM pipeline (cost reduction)
-    - Implemented as optional `--two-stage` mode (now default)
-    - Stage 1: fast filter model (`gpt-5.1` with `model_reasoning_effort=low` by default)
-    - Stage 2: full card generation model (`gpt-5.1` with `model_reasoning_effort=high` by default)
-    - Still room for improvement: richer filter signals, cost/usage metrics
-2.  [x] Semantic deduplication with embeddings
-    - Initial implementation using SentenceTransformers + FAISS-based vector cache
-3.  [ ] Enhanced scoring heuristics
+1.  [x] Two-stage LLM pipeline ✅ (cost reduction)
+    - Enabled by default (`--two-stage`)
+    - Stage 1: fast filter with full conversations, LLM judges quality directly
+    - Stage 2: parallel card generation (3 workers)
+    - Heuristics now optional (`--use-filter-heuristics`)
+2.  [x] Semantic deduplication with embeddings ✅
+    - SentenceTransformers + FAISS-based vector cache
+3.  [ ] Enhanced scoring heuristics (now optional, via `--use-filter-heuristics`)
 4.  [ ] Quality validation & auto-fix
 5.  [ ] Configurable prompt templates
 
@@ -1600,7 +1606,14 @@ intelligent learning companion. The highest-leverage improvements are now comple
 3.  ~~**Two-stage pipeline**~~ ✅ **DONE** - Fast filter + slow generation
 4.  ~~**AnkiConnect**~~ ✅ **DONE** - One-click import, 30-60x faster
 5.  ~~**Conversation-level processing**~~ ✅ **DONE** - LLM sees full learning journey
-6.  **Active learning** - Biggest remaining potential
+6.  ~~**Parallel Stage 2**~~ ✅ **DONE** - 3 concurrent workers for card generation
+7.  ~~**Full context to Stage 1**~~ ✅ **DONE** - LLM judges quality directly
+8.  **Active learning** - Biggest remaining potential
+
+**Recent enhancements:**
+-   Heuristics now **optional** (`--use-filter-heuristics`, off by default)
+-   Stage 1 receives **full conversations** (no truncation)
+-   Stage 2 runs with **3 parallel workers** via ThreadPoolExecutor
 
 **Remaining opportunities:**
 -   Plugin architecture for custom scorers/parsers

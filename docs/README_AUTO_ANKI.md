@@ -72,6 +72,10 @@ python3 auto_anki_agent.py \
 - `--semantic-model NAME`: SentenceTransformers model for semantic dedup (default: all-MiniLM-L6-v2)
 - `--semantic-similarity-threshold FLOAT`: Cosine similarity threshold for semantic dedup (default: 0.85)
 
+### Heuristic Filtering (Optional)
+- `--use-filter-heuristics`: Enable heuristic pre-filtering before Stage 1 LLM (disabled by default)
+- `--min-score FLOAT`: Minimum aggregate score for conversations (only applies with `--use-filter-heuristics`)
+
 ### Other Options
 - `--dry-run`: Build prompts without calling codex
 - `--verbose`: Print progress information
@@ -150,18 +154,21 @@ Tracks:
    - Each conversation contains multiple turns (user-assistant exchanges)
    - Long conversations are split at topic boundaries
 2. **Applies filters**: date range, unprocessed-only flag
-3. **Scores conversations** using aggregate heuristics across all turns
-4. **Deduplicates** against existing Anki cards
+3. **Deduplicates** against existing Anki cards
    - Only skips conversations where ALL turns are duplicates
    - Annotates which turns are "already covered" for LLM guidance
-5. **Batches conversations** and sends to `codex exec`
-6. **Codex sees full learning journey**:
+4. **Two-stage LLM pipeline** (default):
+   - **Stage 1 (Filter)**: Fast LLM reviews full conversations, selects best candidates
+   - **Stage 2 (Generate)**: Strong LLM generates cards in parallel (3 concurrent workers)
+5. **Codex sees full learning journey**:
    - Follow-up questions (indicates user confusion)
    - Corrections in later turns
    - Topic evolution across turns
-7. **Codex generates** proposed cards linked to specific turns
-8. **Outputs** markdown and/or JSON for review
-9. **Updates state** to track processed conversations
+6. **Codex generates** proposed cards linked to specific turns
+7. **Outputs** markdown and/or JSON for review
+8. **Updates state** to track processed conversations
+
+**Note**: Heuristic scoring (`--use-filter-heuristics`) is optional and disabled by default. The Stage 1 LLM now handles quality filtering directly.
 
 ## Anki Best Practices (Embedded in Prompt)
 
@@ -206,25 +213,28 @@ python3 auto_anki_agent.py \
   --codex-model gpt-5-codex
 ```
 
-### Two-Stage Pipeline (Cheaper Runs)
+### Two-Stage Pipeline (Default)
 
 ```bash
 python3 auto_anki_agent.py \
   --unprocessed-only \
-  --two-stage \
   --verbose
 ```
 
-This uses a fast model (`gpt-5.1` with `model_reasoning_effort=low`) to filter contexts (stage 1) and
-only sends the most promising ones to a stronger model (`gpt-5.1` with `model_reasoning_effort=high`)
-for card generation (stage 2).
+The two-stage pipeline is enabled by default:
+- **Stage 1**: Fast model (`gpt-5.1` with `model_reasoning_effort=low`) reviews full conversations
+  and selects the best candidates for card generation
+- **Stage 2**: Strong model (`gpt-5.1` with `model_reasoning_effort=high`) generates cards
+  with **3 concurrent workers** for parallel processing
+
+Use `--single-stage` to disable and use single-stage card generation instead.
 
 ## Tips
 
 1. **Start with `--dry-run`**: Preview prompts before spending tokens
 2. **Use `--verbose`**: See what's happening under the hood
 3. **Review markdown output**: Easier to scan than JSON
-4. **Adjust scoring**: Use `--min-score` to filter more/less aggressively
+4. **Use heuristic filtering** (optional): Add `--use-filter-heuristics` and `--min-score` for pre-LLM filtering
 5. **Control deduplication**:
    - **Default**: Hybrid mode (semantic + string) - automatically falls back to string if dependencies unavailable
    - Use `--similarity-threshold` to tune string-based matching (default: 0.82)
@@ -278,21 +288,18 @@ rm .auto_anki_agent_state.json
         │
         ▼
 ┌──────────────────┐
-│  Batch & Build   │  ← Anki Best Practices
-│  Conversation    │  ← Full learning journey
-│  Prompts         │
-└───────┬──────────┘
-        │
-        ▼
-┌──────────────────┐
-│  Stage 1 (Filter)│  ← Fast model (e.g., gpt-5.1 w/ low reasoning)
+│  Stage 1 (Filter)│  ← Fast model (gpt-5.1 w/ low reasoning)
+│  Full context    │  ← LLM sees full conversations
 └───────┬──────────┘
         │ (keep only best conversations)
         ▼
-┌──────────────────┐
-│  Stage 2 (Cards) │  ← Strong model (e.g., gpt-5.1 w/ high reasoning)
-│  codex exec      │  ← LLM sees follow-ups, corrections
-└───────┬──────────┘
+┌──────────────────────────────────────┐
+│  Stage 2 (Cards) - PARALLEL          │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ │
+│  │ Worker 1│ │ Worker 2│ │ Worker 3│ │  ← 3 concurrent workers
+│  └─────────┘ └─────────┘ └─────────┘ │
+│  Strong model (gpt-5.1 w/ high)      │
+└───────┬──────────────────────────────┘
         │
         ▼
 ┌──────────────────┐
