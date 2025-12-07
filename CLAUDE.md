@@ -280,6 +280,9 @@ Generates human-readable card preview.
     ├── anki_review_ui.py            # Interactive review UI (Shiny app, 1050+ lines)
     ├── anki_connect.py              # AnkiConnect HTTP client (437 lines)
     ├── launch_ui.sh                 # Launch script for review UI
+    ├── scripts/                     # Automation scripts
+    │   ├── auto_anki_batch.sh       # Batch processing with usage throttling
+    │   └── codex-usage.sh           # Codex API usage monitoring
     ├── CLAUDE.md                    # This file
     ├── docs/                        # User & technical documentation
     │   ├── README_AUTO_ANKI.md      # User documentation
@@ -552,6 +555,19 @@ uv run auto-anki-progress           # Show last 12 weeks
 uv run auto-anki-progress --weeks 24  # Show more history
 uv run auto-anki-progress --json    # Machine-readable output
 ```
+
+**Automated batch processing with usage throttling:**
+
+``` bash
+./scripts/auto_anki_batch.sh        # Run indefinitely, Ctrl+C to stop
+```
+
+This script:
+-   Runs `auto-anki` in a loop, working backwards through months (newest first)
+-   Monitors Codex API usage via `scripts/codex-usage.sh`
+-   Waits 15 minutes when 5h window usage exceeds pace + 10%
+-   Auto-advances to next month when current month is exhausted
+-   Logs to `auto_anki_runs/batch_YYYYMMDD_HHMMSS.log`
 
 ### Important Flags
 

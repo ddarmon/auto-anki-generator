@@ -407,6 +407,49 @@ uv run auto-anki-progress --json
 ╰──────────────────────────────────────────────────────────╯
 ```
 
+## Automated Batch Processing
+
+For processing large backlogs of conversations, use the batch automation script:
+
+```bash
+./scripts/auto_anki_batch.sh
+# Press Ctrl+C to stop gracefully
+```
+
+### Features
+
+- **Usage-aware throttling** - Monitors Codex API usage and pauses when exceeding sustainable pace
+- **Month-by-month processing** - Works backwards from current month (newest conversations first)
+- **Auto-advance** - Moves to next month when current month is exhausted
+- **Graceful shutdown** - Ctrl+C stops cleanly, logs final state
+- **Comprehensive logging** - All output saved to `auto_anki_runs/batch_*.log`
+
+### How It Works
+
+1. Checks Codex 5h window usage via `scripts/codex-usage.sh`
+2. If usage exceeds pace + 10%, waits 15 minutes
+3. Runs `uv run auto-anki --date-range YYYY-MM --unprocessed-only --verbose`
+4. Shows progress via `uv run auto-anki-progress`
+5. When "No new conversations found", advances to previous month
+6. Loops indefinitely until manually stopped
+
+### Requirements
+
+- Codex CLI logged in (`~/.codex/auth.json` must exist)
+- Anki running with AnkiConnect plugin
+- `auto_anki_config.json` configured with your decks and `chat_root`
+
+### Configuration
+
+Edit `scripts/auto_anki_batch.sh` to customize:
+
+```bash
+PACE_BUFFER=10          # Wait threshold: pace + this value (%)
+WAIT_DURATION=900       # Wait time in seconds (default: 15 min)
+END_YEAR=2022           # How far back to process
+END_MONTH=1
+```
+
 ## Future Enhancements
 
 - [x] ~~Automatic HTML card import via AnkiConnect~~ ✅ **DONE!**
@@ -415,6 +458,7 @@ uv run auto-anki-progress --json
 - [x] ~~Two-stage LLM pipeline~~ ✅ **DONE!** (Fast filter + slow generation)
 - [x] ~~Test suite~~ ✅ **DONE!** (97 tests covering core functions)
 - [x] ~~Progress dashboard~~ ✅ **DONE!** (TUI with weekly stats + streak tracking)
+- [x] ~~Batch automation with usage throttling~~ ✅ **DONE!** (`scripts/auto_anki_batch.sh`)
 - [ ] Tag taxonomy management
 - [ ] Multi-deck routing logic with ML
 - [ ] Topic distribution visualization
