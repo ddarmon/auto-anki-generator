@@ -14,9 +14,126 @@ Documentation: https://foosoft.net/projects/anki-connect/
 """
 
 import json
+import re
 import urllib.request
 import urllib.error
 from typing import Dict, List, Optional, Any
+
+
+def markdown_to_anki_html(text: str) -> str:
+    """Convert Markdown formatting to Anki-compatible HTML.
+
+    Handles:
+    - **bold** and __bold__ → <b>bold</b>
+    - *italic* and _italic_ → <i>italic</i>
+    - `inline code` → <code>inline code</code>
+    - ```code blocks``` → <pre>code blocks</pre>
+    - Unordered lists (- item) → <ul><li>item</li></ul>
+    - Ordered lists (1. item) → <ol><li>item</li></ol>
+    - Line breaks → <br>
+
+    LaTeX notation (\\(...\\) and \\[...\\]) is preserved for MathJax.
+    """
+    if not text:
+        return text
+
+    # Protect LaTeX from being processed
+    latex_placeholders = []
+
+    def protect_latex(match):
+        latex_placeholders.append(match.group(0))
+        return f"__LATEX_{len(latex_placeholders) - 1}__"
+
+    # Protect display math \[...\] and inline math \(...\)
+    text = re.sub(r'\\\[.*?\\\]', protect_latex, text, flags=re.DOTALL)
+    text = re.sub(r'\\\(.*?\\\)', protect_latex, text, flags=re.DOTALL)
+    # Also protect $...$ style if present
+    text = re.sub(r'\$\$.*?\$\$', protect_latex, text, flags=re.DOTALL)
+    text = re.sub(r'\$[^$\n]+\$', protect_latex, text)
+
+    # Code blocks (must be before inline code)
+    text = re.sub(r'```(\w*)\n?(.*?)```', r'<pre>\2</pre>', text, flags=re.DOTALL)
+
+    # Inline code
+    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+
+    # Bold (**text**) - only asterisk style to avoid matching underscores in code/math
+    text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', text)
+
+    # Italic (*text*) - only asterisk style, be careful not to match inside words
+    text = re.sub(r'(?<![*\w])\*([^*]+)\*(?![*\w])', r'<i>\1</i>', text)
+
+    # Blockquotes
+    text = re.sub(r'^>\s*(.+)$', r'<blockquote>\1</blockquote>', text, flags=re.MULTILINE)
+
+    # Process lists (unordered and ordered)
+    lines = text.split('\n')
+    result_lines = []
+    in_ul = False
+    in_ol = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Check for unordered list item
+        ul_match = re.match(r'^[-*+]\s+(.+)$', stripped)
+        # Check for ordered list item
+        ol_match = re.match(r'^\d+\.\s+(.+)$', stripped)
+
+        if ul_match:
+            if not in_ul:
+                if in_ol:
+                    result_lines.append('</ol>')
+                    in_ol = False
+                result_lines.append('<ul>')
+                in_ul = True
+            result_lines.append(f'<li>{ul_match.group(1)}</li>')
+        elif ol_match:
+            if not in_ol:
+                if in_ul:
+                    result_lines.append('</ul>')
+                    in_ul = False
+                result_lines.append('<ol>')
+                in_ol = True
+            result_lines.append(f'<li>{ol_match.group(1)}</li>')
+        else:
+            if in_ul:
+                result_lines.append('</ul>')
+                in_ul = False
+            if in_ol:
+                result_lines.append('</ol>')
+                in_ol = False
+            # Add <br> for non-list lines (except empty lines which become paragraph breaks)
+            if stripped:
+                result_lines.append(line + '<br>')
+            else:
+                result_lines.append('')  # Keep empty lines for paragraph detection
+
+    if in_ul:
+        result_lines.append('</ul>')
+    if in_ol:
+        result_lines.append('</ol>')
+
+    text = '\n'.join(result_lines)
+
+    # Convert double+ newlines to paragraph breaks
+    text = re.sub(r'\n\n+', '</p><p>', text)
+    # Remove remaining newlines (they're just formatting artifacts now)
+    text = re.sub(r'\n', '', text)
+    # Clean up trailing <br> before block elements
+    text = re.sub(r'<br>(</?(?:ul|ol|li|p|pre|blockquote)>)', r'\1', text)
+    # Clean up <br> at very end
+    text = re.sub(r'<br>$', '', text)
+
+    # Wrap in paragraph if we added paragraph breaks
+    if '</p><p>' in text:
+        text = '<p>' + text + '</p>'
+
+    # Restore LaTeX
+    for i, latex in enumerate(latex_placeholders):
+        text = text.replace(f"__LATEX_{i}__", latex)
+
+    return text
 
 
 class AnkiConnectError(Exception):
@@ -244,17 +361,26 @@ class AnkiConnectClient:
     # Convenience Methods for Auto Anki Agent
     # ========================================================================
 
+    @staticmethod
+    def _has_cloze_syntax(text: str) -> bool:
+        """Check if text contains Anki cloze deletion syntax {{c1::...}}."""
+        return bool(re.search(r'\{\{c\d+::', text))
+
     def import_card(
         self,
         card: Dict,
-        allow_duplicate: bool = False
+        allow_duplicate: bool = False,
+        convert_markdown: bool = True
     ) -> Optional[int]:
         """
         Import a card from Auto Anki Agent format.
 
+        Automatically detects cloze syntax and uses appropriate note type.
+
         Args:
             card: Card dictionary with keys: deck, front, back, tags
             allow_duplicate: Whether to allow duplicate cards
+            convert_markdown: Whether to convert Markdown to HTML (default: True)
 
         Returns:
             Note ID if successful, None if duplicate
@@ -262,27 +388,81 @@ class AnkiConnectClient:
         Raises:
             AnkiConnectError: If the operation fails
         """
-        return self.add_note(
-            deck=card.get('deck', 'Default'),
-            front=card['front'],
-            back=card['back'],
-            tags=card.get('tags', []),
-            allow_duplicate=allow_duplicate
-        )
+        front = card['front']
+        back = card['back']
+
+        if convert_markdown:
+            front = markdown_to_anki_html(front)
+            back = markdown_to_anki_html(back)
+
+        # Detect cloze syntax and use appropriate note type
+        if self._has_cloze_syntax(front) or self._has_cloze_syntax(back):
+            # Use Cloze note type - combine front and back into Text field
+            cloze_text = front
+            if back and back.strip():
+                cloze_text += "<br><br>" + back
+            return self._add_cloze_note(
+                deck=card.get('deck', 'Default'),
+                text=cloze_text,
+                tags=card.get('tags', []),
+                allow_duplicate=allow_duplicate
+            )
+        else:
+            return self.add_note(
+                deck=card.get('deck', 'Default'),
+                front=front,
+                back=back,
+                tags=card.get('tags', []),
+                allow_duplicate=allow_duplicate
+            )
+
+    def _add_cloze_note(
+        self,
+        deck: str,
+        text: str,
+        tags: Optional[List[str]] = None,
+        allow_duplicate: bool = False
+    ) -> Optional[int]:
+        """Add a cloze deletion note to Anki."""
+        tags = tags or []
+
+        note = {
+            'deckName': deck,
+            'modelName': 'Cloze',
+            'fields': {
+                'Text': text,
+                'Extra': ''
+            },
+            'tags': tags,
+            'options': {
+                'allowDuplicate': allow_duplicate
+            }
+        }
+
+        try:
+            return self._invoke('addNote', note=note)
+        except AnkiConnectError as e:
+            if 'duplicate' in str(e).lower():
+                return None
+            raise
 
     def import_cards_batch(
         self,
         cards: List[Dict],
         allow_duplicates: bool = False,
-        create_decks: bool = True
+        create_decks: bool = True,
+        convert_markdown: bool = True
     ) -> Dict[str, int]:
         """
         Import multiple cards at once.
+
+        Automatically detects cloze syntax and uses appropriate note type.
 
         Args:
             cards: List of card dictionaries
             allow_duplicates: Whether to allow duplicate cards
             create_decks: Whether to create decks if they don't exist
+            convert_markdown: Whether to convert Markdown to HTML (default: True)
 
         Returns:
             Dict with 'imported', 'duplicates', 'failed' counts
@@ -297,29 +477,65 @@ class AnkiConnectClient:
                 if deck not in existing_decks:
                     self.create_deck(deck)
 
-        # Prepare notes in AnkiConnect format
-        notes = []
-        for card in cards:
-            notes.append({
-                'deckName': card.get('deck', 'Default'),
-                'modelName': 'Basic',
-                'fields': {
-                    'Front': card['front'],
-                    'Back': card['back']
-                },
-                'tags': card.get('tags', []),
-                'options': {
-                    'allowDuplicate': allow_duplicates
-                }
-            })
+        # Separate basic and cloze cards
+        basic_notes = []
+        cloze_notes = []
 
-        # Add notes
-        result_ids = self.add_notes(notes)
+        for card in cards:
+            front = card['front']
+            back = card['back']
+
+            if convert_markdown:
+                front = markdown_to_anki_html(front)
+                back = markdown_to_anki_html(back)
+
+            if self._has_cloze_syntax(front) or self._has_cloze_syntax(back):
+                # Cloze note - combine front and back into Text field
+                cloze_text = front
+                if back and back.strip():
+                    cloze_text += "<br><br>" + back
+                cloze_notes.append({
+                    'deckName': card.get('deck', 'Default'),
+                    'modelName': 'Cloze',
+                    'fields': {
+                        'Text': cloze_text,
+                        'Extra': ''
+                    },
+                    'tags': card.get('tags', []),
+                    'options': {
+                        'allowDuplicate': allow_duplicates
+                    }
+                })
+            else:
+                # Basic note
+                basic_notes.append({
+                    'deckName': card.get('deck', 'Default'),
+                    'modelName': 'Basic',
+                    'fields': {
+                        'Front': front,
+                        'Back': back
+                    },
+                    'tags': card.get('tags', []),
+                    'options': {
+                        'allowDuplicate': allow_duplicates
+                    }
+                })
+
+        # Add notes in batches
+        all_result_ids = []
+
+        if basic_notes:
+            basic_ids = self.add_notes(basic_notes)
+            all_result_ids.extend(basic_ids)
+
+        if cloze_notes:
+            cloze_ids = self.add_notes(cloze_notes)
+            all_result_ids.extend(cloze_ids)
 
         # Count results
-        imported = sum(1 for id in result_ids if id is not None)
-        duplicates = sum(1 for id in result_ids if id is None)
-        failed = len(result_ids) - imported - duplicates
+        imported = sum(1 for id in all_result_ids if id is not None)
+        duplicates = sum(1 for id in all_result_ids if id is None)
+        failed = len(all_result_ids) - imported - duplicates
 
         return {
             'total': len(cards),
