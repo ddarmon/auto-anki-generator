@@ -166,6 +166,7 @@ Format:
 - **User Prompt** - Original question from conversation
 - **Assistant Answer** - Original response (truncated if long)
 - **Metadata** - Title, URL, file path, quality score
+- **Conversation Context** (NEW!) - Turn position, key topics, total turns
 - **Quality Signals** - Heuristic signals (question-like, definition-like, etc.)
 
 ### Statistics Panel
@@ -249,7 +250,8 @@ Format:
 
 The `CardReviewSession` class manages:
 - Loading cards from `all_proposed_cards.json`
-- Loading contexts from `selected_contexts.json`
+- Loading contexts from `selected_conversations.json` (v2) or `selected_contexts.json` (v1)
+- Backward-compatible context lookup by `context_id` or `(conversation_id, turn_index)`
 - Tracking decisions (accept/reject/edit/skip)
 - Computing statistics
 - Exporting accepted cards
@@ -265,11 +267,18 @@ The Shiny app uses reactive programming:
 
 ```
 Run Directory
-  ├─ all_proposed_cards.json  ──→ Cards list
-  ├─ selected_contexts.json   ──→ Context lookup
-  └─ (user decisions)         ──→ Session state
-                              ──→ accepted_cards_*.json
+  ├─ all_proposed_cards.json       ──→ Cards list
+  ├─ selected_conversations.json   ──→ Conversation lookup (v2, preferred)
+  ├─ selected_contexts.json        ──→ Context lookup (v1, fallback)
+  └─ (user decisions)              ──→ Session state
+                                   ──→ accepted_cards_*.json
 ```
+
+**Conversation Context Display:**
+- Cards linked via `conversation_id` + `turn_index`
+- UI shows turn position (e.g., "Turn 3 of 5")
+- Key topics extracted from conversation
+- Full conversation available for context
 
 ## Troubleshooting
 

@@ -17,7 +17,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from json_repair import repair_json
 
 from auto_anki.cards import Card
-from auto_anki.contexts import ChatTurn
+from auto_anki.contexts import ChatTurn, Conversation
 
 
 def build_codex_prompt(
@@ -708,11 +708,366 @@ def run_codex_pipeline(
         print(f"Run artifacts saved to {run_dir}")
 
 
+def build_conversation_prompt(
+    cards: List[Card],
+    conversations: List[Conversation],
+    args: Any,
+) -> str:
+    """Build the conversation-level card generation prompt.
+
+    Unlike the per-turn prompt, this sends full conversations so the LLM can:
+    - Understand the user's learning journey
+    - See follow-up questions that indicate confusion
+    - Avoid cards from exchanges that were later corrected
+    - Create coherent card sets that build on each other
+    """
+    cards_payload = [
+        {
+            "deck": card.deck,
+            "front": card.front[:200],  # Truncate for space
+            "tags": card.tags,
+        }
+        for card in cards
+    ]
+
+    conversations_payload = [
+        {
+            "conversation_id": conv.conversation_id,
+            "source_title": conv.source_title,
+            "source_url": conv.source_url,
+            "key_topics": conv.key_topics,
+            "aggregate_score": round(conv.aggregate_score, 3),
+            "aggregate_signals": conv.aggregate_signals,
+            "turns": [
+                {
+                    "turn_index": turn.turn_index,
+                    "context_id": turn.context_id,
+                    "user_timestamp": turn.user_timestamp,
+                    "user_prompt": turn.user_prompt,
+                    "assistant_answer": turn.assistant_answer,
+                    "score": round(turn.score, 3),
+                    "signals": turn.signals,
+                }
+                for turn in conv.turns
+            ],
+        }
+        for conv in conversations
+    ]
+
+    contract = {
+        "cards": [
+            {
+                "conversation_id": "string (link to parent conversation)",
+                "turn_index": "int (which turn this card is based on, 0-indexed)",
+                "context_id": "string (per-turn ID for backward compat)",
+                "deck": "string",
+                "card_style": "basic|cloze|list",
+                "front": "string",
+                "back": "string",
+                "tags": ["list", "of", "tags"],
+                "confidence": "0-1 float",
+                "notes": "why this card matters",
+                "depends_on": ["optional list of context_ids this card builds upon"],
+            }
+        ],
+        "skipped_conversations": [
+            {
+                "conversation_id": "string",
+                "reason": "why the entire conversation was skipped",
+            }
+        ],
+        "skipped_turns": [
+            {
+                "conversation_id": "string",
+                "turn_index": "int",
+                "reason": "why this specific turn was skipped",
+            }
+        ],
+        "learning_insights": [
+            {
+                "conversation_id": "string",
+                "insight": "what the user was trying to learn",
+                "misconceptions_corrected": ["things user initially misunderstood"],
+            }
+        ],
+    }
+
+    payload = {
+        "existing_cards": cards_payload,
+        "candidate_conversations": conversations_payload,
+        "output_contract": contract,
+    }
+
+    instructions = textwrap.dedent(
+        """
+        CRITICAL: You MUST respond with ONLY valid JSON matching the output_contract below.
+        Do NOT include markdown, explanations, or any text outside the JSON structure.
+        Do NOT wrap the JSON in ```json blocks.
+
+        You are operating as the decision layer of an autonomous spaced-repetition agent.
+
+        ## Conversation-Level Analysis
+
+        You receive **full conversations** instead of isolated exchanges. This enables you to:
+        1. See how the user's understanding evolved across turns
+        2. Identify follow-up questions (user struggled, needed clarification)
+        3. Skip early turns if they contain information that was later corrected
+        4. Create coherent card sets that build on each other
+
+        ## Core Philosophy
+
+        1. **Understand First, Memorize Second**: Each card should reflect a clear mental model
+        2. **Build Upon the Basics**: Order cards logically, foundational concepts first
+        3. **Minimum Information Principle**: Each card = smallest possible piece of information
+
+        ## Guidelines for Processing Conversations
+
+        - **Read the entire conversation first** before deciding on cards
+        - **Prioritize final understanding** over intermediate confusion
+        - Use the `turn_index` to link cards to specific exchanges
+        - Use `depends_on` to indicate card ordering for learning
+        - If `aggregate_signals.duplicate_turns` is set, those turns are already covered - skip them
+
+        ## Red Flags to Skip
+
+        - User says "wait, that's wrong" or "actually I misunderstood"
+        - Assistant corrects earlier information ("I should clarify...")
+        - Conversation degenerates into debugging without resolution
+        - Final exchange shows user still confused
+
+        ## Green Flags for High-Quality Cards
+
+        - Clear progression from question to understanding
+        - User successfully applies the concept ("Oh, so it's like...")
+        - Multiple related concepts explained coherently
+        - Concrete examples that crystallize understanding
+
+        ## Card Formats
+
+        1. **Question/Answer (basic)**: Default for most concepts
+        2. **Cloze Deletion**: Ideal for facts, definitions, vocabulary
+
+        ## Output Requirements
+
+        Return ONLY valid JSON adhering to `output_contract`. Critical rules:
+        - NO markdown fencing (no ```json blocks)
+        - NO explanatory text before or after the JSON
+        - START your response with `{` and END with `}`
+        - Include `conversation_id` AND `turn_index` for each card
+        - `confidence`: 0.0-1.0
+
+        YOUR ENTIRE RESPONSE MUST BE VALID, PARSEABLE JSON.
+        """
+    ).strip()
+
+    return instructions + "\n\n" + json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def build_conversation_filter_prompt(
+    conversations: List[Conversation],
+    args: Any,
+) -> str:
+    """Build the stage-1 filter prompt for conversations.
+
+    Stage 1 should be fast and cheap: it only decides which conversations
+    are worth sending to the more expensive card-generation stage.
+    """
+    conversations_payload = [
+        {
+            "conversation_id": conv.conversation_id,
+            "source_title": conv.source_title,
+            "key_topics": conv.key_topics,
+            "turn_count": len(conv.turns),
+            "aggregate_score": round(conv.aggregate_score, 3),
+            "aggregate_signals": conv.aggregate_signals,
+            # Only include summaries, not full text
+            "turn_summaries": [
+                {
+                    "turn_index": turn.turn_index,
+                    "user_prompt_preview": turn.user_prompt[:150],
+                    "key_points": turn.key_points,
+                    "score": round(turn.score, 3),
+                }
+                for turn in conv.turns
+            ],
+        }
+        for conv in conversations
+    ]
+
+    contract = {
+        "filter_decisions": [
+            {
+                "conversation_id": "string",
+                "keep": "boolean (true if worth sending to card generation)",
+                "reason": "short reason for keeping or skipping",
+            }
+        ]
+    }
+
+    payload = {
+        "candidate_conversations": conversations_payload,
+        "output_contract": contract,
+    }
+
+    instructions = textwrap.dedent(
+        """
+        CRITICAL: You MUST respond with ONLY valid JSON matching the output_contract below.
+        Do NOT include markdown, explanations, or any text outside the JSON structure.
+        Do NOT wrap the JSON in ```json blocks.
+
+        You are the fast, cheap *filtering* stage of an autonomous spaced-repetition agent.
+
+        ## Your Goal
+
+        Quickly decide which conversations are worth sending to a slower, more
+        expensive card-generation model.
+
+        Focus on:
+        - Educational value (clear concepts, stable knowledge)
+        - Clarity and structure (good explanations, examples, lists)
+        - Non-trivial content (avoid obvious, shallow, or throwaway exchanges)
+        - Multiple turns with progression (shows learning journey)
+
+        ## Signals That a Conversation is Worth Keeping
+
+        - High aggregate_score
+        - Multiple question_turns (user was engaged)
+        - Definition or explanation content
+        - Concrete topics in key_topics
+        - Multi-turn progression toward understanding
+
+        ## Signals to Skip
+
+        - Low scores across all turns
+        - Trivial questions without substantive answers
+        - Debugging or troubleshooting without resolution
+        - Off-topic or conversational exchanges
+
+        You DO NOT generate cards here. Just filter.
+
+        YOUR ENTIRE RESPONSE MUST BE VALID, PARSEABLE JSON.
+        """
+    ).strip()
+
+    return instructions + "\n\n" + json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def format_conversation_cards_as_markdown(
+    cards_json: List[Dict[str, Any]],
+    conversations: List[Conversation],
+    run_timestamp: str,
+) -> str:
+    """Format proposed cards as markdown, showing conversation context."""
+    # Build lookup maps
+    conv_map = {conv.conversation_id: conv for conv in conversations}
+    turn_map: Dict[str, ChatTurn] = {}
+    for conv in conversations:
+        for turn in conv.turns:
+            turn_map[turn.context_id] = turn
+
+    lines = [
+        "# Proposed Anki Cards (Conversation Mode)",
+        "",
+        f"Generated: {run_timestamp}",
+        f"Total cards: {len(cards_json)}",
+        f"From {len(conversations)} conversations",
+        "",
+        "---",
+        "",
+    ]
+
+    # Group cards by conversation
+    cards_by_conv: Dict[str, List[Dict[str, Any]]] = {}
+    for card_data in cards_json:
+        conv_id = card_data.get("conversation_id", "unknown")
+        if conv_id not in cards_by_conv:
+            cards_by_conv[conv_id] = []
+        cards_by_conv[conv_id].append(card_data)
+
+    for conv_id, conv_cards in cards_by_conv.items():
+        conv = conv_map.get(conv_id)
+
+        # Conversation header
+        title = conv.source_title if conv else "Unknown Conversation"
+        lines.append(f"## Conversation: {title}")
+        lines.append("")
+
+        if conv:
+            lines.append(f"**Topics:** {', '.join(conv.key_topics[:5])}")
+            lines.append(f"**Turns:** {len(conv.turns)}")
+            if conv.source_url:
+                lines.append(f"**Source:** {conv.source_url}")
+        lines.append("")
+
+        # Cards from this conversation
+        for card_data in conv_cards:
+            turn_idx = card_data.get("turn_index", "?")
+            context_id = card_data.get("context_id", "")
+            turn = turn_map.get(context_id)
+
+            lines.append(f"### Card (Turn {turn_idx})")
+            lines.append("")
+
+            # Metadata
+            lines.append(f"**Deck:** {card_data.get('deck', 'unknown')}")
+            lines.append(f"**Style:** {card_data.get('card_style', 'basic')}")
+
+            confidence = card_data.get("confidence", 0.0)
+            try:
+                confidence_float = float(confidence) if confidence else 0.0
+                lines.append(f"**Confidence:** {confidence_float:.2f}")
+            except (ValueError, TypeError):
+                lines.append(f"**Confidence:** {confidence}")
+
+            if card_data.get("tags"):
+                lines.append(f"**Tags:** {', '.join(card_data['tags'])}")
+
+            if card_data.get("depends_on"):
+                lines.append(f"**Depends on:** {len(card_data['depends_on'])} prior card(s)")
+
+            lines.append("")
+
+            # Card content
+            lines.append("#### Front")
+            lines.append("")
+            lines.append(card_data.get("front", ""))
+            lines.append("")
+
+            lines.append("#### Back")
+            lines.append("")
+            lines.append(card_data.get("back", ""))
+            lines.append("")
+
+            # Source turn context (collapsed)
+            if turn:
+                lines.append("<details>")
+                lines.append("<summary>Source Exchange</summary>")
+                lines.append("")
+                lines.append(f"**User:** {turn.user_prompt[:300]}...")
+                lines.append("")
+                lines.append(f"**Assistant:** {turn.assistant_answer[:500]}...")
+                lines.append("</details>")
+                lines.append("")
+
+            # Notes
+            if card_data.get("notes"):
+                lines.append(f"**Notes:** {card_data['notes']}")
+                lines.append("")
+
+            lines.append("---")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
 __all__ = [
     "build_codex_prompt",
     "build_codex_filter_prompt",
+    "build_conversation_prompt",
+    "build_conversation_filter_prompt",
     "run_codex_exec",
     "parse_codex_response_robust",
     "format_cards_as_markdown",
+    "format_conversation_cards_as_markdown",
     "run_codex_pipeline",
 ]

@@ -61,13 +61,51 @@ class CardReviewSession:
         return json.loads(cards_file.read_text())
 
     def _load_contexts(self) -> Dict[str, Dict]:
-        """Load context information, indexed by context_id."""
+        """Load context information, indexed by context_id.
+
+        Supports both new conversation format (selected_conversations.json)
+        and legacy per-turn format (selected_contexts.json).
+        """
+        # Try new conversation format first
+        conversations_file = self.run_dir / "selected_conversations.json"
+        if conversations_file.exists():
+            return self._load_from_conversations(conversations_file)
+
+        # Fall back to legacy per-turn format
         contexts_file = self.run_dir / "selected_contexts.json"
         if not contexts_file.exists():
             return {}
 
         contexts_list = json.loads(contexts_file.read_text())
         return {ctx['context_id']: ctx for ctx in contexts_list}
+
+    def _load_from_conversations(self, conversations_file: Path) -> Dict[str, Dict]:
+        """Load contexts from conversation-format JSON.
+
+        Extracts individual turns and indexes them by context_id for
+        backward-compatible lookup.
+        """
+        conversations_list = json.loads(conversations_file.read_text())
+        contexts: Dict[str, Dict] = {}
+
+        # Also build a conversation index for full-conversation lookups
+        self.conversations = {conv['conversation_id']: conv for conv in conversations_list}
+
+        # Extract individual turns for per-turn lookups
+        for conv in conversations_list:
+            for turn in conv.get('turns', []):
+                context_id = turn.get('context_id')
+                if context_id:
+                    # Add conversation-level info to each turn for richer display
+                    turn_context = dict(turn)
+                    turn_context['conversation_id'] = conv['conversation_id']
+                    turn_context['conversation_title'] = conv.get('source_title')
+                    turn_context['conversation_url'] = conv.get('source_url')
+                    turn_context['conversation_topics'] = conv.get('key_topics', [])
+                    turn_context['total_turns_in_conversation'] = len(conv.get('turns', []))
+                    contexts[context_id] = turn_context
+
+        return contexts
 
     def get_card(self, index: int) -> Optional[Dict]:
         """Get card at index."""
@@ -76,8 +114,34 @@ class CardReviewSession:
         return None
 
     def get_context(self, card: Dict) -> Optional[Dict]:
-        """Get context for a card."""
-        return self.contexts.get(card.get('context_id'))
+        """Get context for a card.
+
+        Handles both new conversation-based cards (with conversation_id + turn_index)
+        and legacy per-turn cards (with context_id only).
+        """
+        # Try context_id lookup first (works for both old and new formats)
+        context = self.contexts.get(card.get('context_id'))
+        if context:
+            return context
+
+        # For conversation-based cards, try to find by conversation_id + turn_index
+        conv_id = card.get('conversation_id')
+        turn_idx = card.get('turn_index')
+        if conv_id and hasattr(self, 'conversations') and conv_id in self.conversations:
+            conv = self.conversations[conv_id]
+            turns = conv.get('turns', [])
+            if turn_idx is not None and 0 <= turn_idx < len(turns):
+                turn = turns[turn_idx]
+                # Enrich with conversation context
+                turn_context = dict(turn)
+                turn_context['conversation_id'] = conv_id
+                turn_context['conversation_title'] = conv.get('source_title')
+                turn_context['conversation_url'] = conv.get('source_url')
+                turn_context['conversation_topics'] = conv.get('key_topics', [])
+                turn_context['total_turns_in_conversation'] = len(turns)
+                return turn_context
+
+        return None
 
     def record_decision(self, index: int, action: str, reason: str = "", edited_card: Dict = None):
         """Record a decision for a card."""
@@ -588,14 +652,19 @@ def build_codex_update_prompt(
         payload["source_context"] = {
             "context_id": context.get("context_id"),
             "source_path": context.get("source_path"),
-            "source_title": context.get("source_title"),
-            "source_url": context.get("source_url"),
+            "source_title": context.get("source_title") or context.get("conversation_title"),
+            "source_url": context.get("source_url") or context.get("conversation_url"),
             "user_prompt": context.get("user_prompt"),
             "assistant_answer": context.get("assistant_answer"),
             "score": context.get("score"),
             "signals": context.get("signals"),
             "key_terms": context.get("key_terms"),
             "key_points": context.get("key_points"),
+            # Conversation-level context (new format)
+            "conversation_id": context.get("conversation_id"),
+            "turn_index": context.get("turn_index"),
+            "conversation_topics": context.get("conversation_topics"),
+            "total_turns_in_conversation": context.get("total_turns_in_conversation"),
         }
 
     instructions = textwrap.dedent(
@@ -829,10 +898,28 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         metadata_items = []
 
-        if context.get('source_title'):
+        # Conversation-level info (new format)
+        if context.get('conversation_title'):
+            metadata_items.append(ui.div(ui.strong("Conversation: "), context['conversation_title']))
+        elif context.get('source_title'):
             metadata_items.append(ui.div(ui.strong("Title: "), context['source_title']))
 
-        if context.get('source_url'):
+        # Show turn position within conversation
+        if context.get('turn_index') is not None and context.get('total_turns_in_conversation'):
+            turn_info = f"Turn {context['turn_index'] + 1} of {context['total_turns_in_conversation']}"
+            metadata_items.append(ui.div(ui.strong("Position: "), turn_info))
+
+        # Show key topics from conversation
+        if context.get('conversation_topics'):
+            topics = ", ".join(context['conversation_topics'][:5])  # Limit to 5 topics
+            metadata_items.append(ui.div(ui.strong("Topics: "), topics))
+
+        if context.get('conversation_url'):
+            metadata_items.append(ui.div(
+                ui.strong("URL: "),
+                ui.a(context['conversation_url'], href=context['conversation_url'], target="_blank")
+            ))
+        elif context.get('source_url'):
             metadata_items.append(ui.div(
                 ui.strong("URL: "),
                 ui.a(context['source_url'], href=context['source_url'], target="_blank")

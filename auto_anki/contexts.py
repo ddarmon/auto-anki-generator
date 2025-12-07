@@ -86,6 +86,8 @@ ENTRY_RE = re.compile(
 @dataclass
 class ChatTurn:
     context_id: str
+    turn_index: int                    # Position in parent conversation (0-indexed)
+    conversation_id: str               # Link to parent Conversation
     source_path: str
     source_title: Optional[str]
     source_url: Optional[str]
@@ -97,6 +99,20 @@ class ChatTurn:
     signals: Dict[str, Any]
     key_terms: List[str]
     key_points: List[str]
+
+
+@dataclass
+class Conversation:
+    """Represents a full ChatGPT conversation containing multiple turns."""
+    conversation_id: str               # SHA256(source_path + first_timestamp)
+    source_path: str
+    source_title: Optional[str]
+    source_url: Optional[str]
+    turns: List[ChatTurn]              # Ordered list of turns
+    total_char_count: int              # Sum of all assistant responses
+    aggregate_score: float             # Combined score across turns
+    aggregate_signals: Dict[str, Any]  # Merged signals
+    key_topics: List[str]              # Extracted from all turns
 
 
 class DateRangeFilter:
@@ -374,16 +390,371 @@ def harvest_chat_contexts(
     return contexts
 
 
+def detect_conversation_signals(turns: List[ChatTurn]) -> Tuple[float, Dict[str, Any]]:
+    """Compute aggregate signals across an entire conversation."""
+    if not turns:
+        return 0.0, {}
+
+    # Aggregate individual turn scores
+    total_score = sum(t.score for t in turns)
+    avg_score = total_score / len(turns)
+
+    # Merge signals
+    aggregate_signals: Dict[str, Any] = {
+        "turn_count": len(turns),
+        "total_score": round(total_score, 3),
+        "avg_score": round(avg_score, 3),
+        "question_turns": sum(1 for t in turns if t.signals.get("question_like")),
+        "definition_turns": sum(1 for t in turns if t.signals.get("definition_like")),
+        "code_turns": sum(1 for t in turns if t.signals.get("code_blocks", 0) > 0),
+        "total_bullets": sum(t.signals.get("bullet_count", 0) for t in turns),
+        "total_headings": sum(t.signals.get("heading_count", 0) for t in turns),
+    }
+
+    # Detect follow-up patterns (indicates user struggled/needed clarification)
+    followup_patterns = [
+        "can you explain",
+        "what do you mean",
+        "i don't understand",
+        "could you clarify",
+        "wait,",
+        "actually,",
+        "so you're saying",
+        "let me make sure",
+    ]
+    followup_count = 0
+    for turn in turns[1:]:  # Skip first turn
+        user_lower = turn.user_prompt.lower()
+        if any(pattern in user_lower for pattern in followup_patterns):
+            followup_count += 1
+    aggregate_signals["followup_turns"] = followup_count
+
+    # Detect correction patterns in assistant responses
+    correction_patterns = [
+        "actually,",
+        "i should clarify",
+        "to correct",
+        "i was wrong",
+        "more accurately",
+        "let me rephrase",
+    ]
+    correction_count = 0
+    for turn in turns[1:]:
+        assistant_lower = turn.assistant_answer.lower()
+        if any(pattern in assistant_lower for pattern in correction_patterns):
+            correction_count += 1
+    aggregate_signals["correction_turns"] = correction_count
+
+    # Boost score for conversations with good learning arc
+    # (questions followed by clarifications shows engagement)
+    if len(turns) >= 2 and aggregate_signals["question_turns"] > 0:
+        total_score += 0.5  # Bonus for multi-turn engagement
+
+    return total_score, aggregate_signals
+
+
+def build_conversation(
+    path: Path,
+    metadata: Dict[str, str],
+    raw_turns: List[Tuple[Dict[str, Any], Dict[str, Any]]],
+    args: argparse.Namespace,
+) -> Optional[Conversation]:
+    """Build a Conversation object from parsed turns."""
+    if not raw_turns:
+        return None
+
+    # Generate conversation_id from path + first timestamp
+    first_timestamp = raw_turns[0][0].get("timestamp", "")
+    conversation_id = sha256(
+        f"{path}:{first_timestamp}".encode("utf-8")
+    ).hexdigest()
+
+    # Build ChatTurn objects
+    chat_turns: List[ChatTurn] = []
+    for turn_index, (user_entry, assistant_entry) in enumerate(raw_turns):
+        combined_key = f"{path}:{user_entry.get('timestamp', '')}"
+        context_id = sha256(
+            (combined_key + user_entry["text"] + assistant_entry["text"]).encode("utf-8")
+        ).hexdigest()
+
+        score, signals = detect_signals(user_entry["text"], assistant_entry["text"])
+
+        assistant_full = assistant_entry["text"].strip()
+        assistant_trimmed = assistant_full[: args.assistant_char_limit]
+
+        key_terms = extract_key_terms(user_entry["text"] + " " + assistant_full)
+        key_points = extract_key_points(assistant_full)
+
+        turn = ChatTurn(
+            context_id=context_id,
+            turn_index=turn_index,
+            conversation_id=conversation_id,
+            source_path=str(path),
+            source_title=metadata.get("title"),
+            source_url=metadata.get("url"),
+            user_timestamp=user_entry.get("timestamp"),
+            user_prompt=user_entry["text"].strip(),
+            assistant_answer=assistant_trimmed,
+            assistant_char_count=len(assistant_full),
+            score=score,
+            signals=signals,
+            key_terms=key_terms,
+            key_points=key_points,
+        )
+        chat_turns.append(turn)
+
+    if not chat_turns:
+        return None
+
+    # Compute aggregate signals
+    aggregate_score, aggregate_signals = detect_conversation_signals(chat_turns)
+
+    # Extract key topics from all turns
+    all_terms: List[str] = []
+    for turn in chat_turns:
+        all_terms.extend(turn.key_terms)
+    key_topics = extract_key_terms(" ".join(all_terms), limit=8)
+
+    # Compute total character count
+    total_char_count = sum(t.assistant_char_count for t in chat_turns)
+
+    return Conversation(
+        conversation_id=conversation_id,
+        source_path=str(path),
+        source_title=metadata.get("title"),
+        source_url=metadata.get("url"),
+        turns=chat_turns,
+        total_char_count=total_char_count,
+        aggregate_score=aggregate_score,
+        aggregate_signals=aggregate_signals,
+        key_topics=key_topics,
+    )
+
+
+def split_conversation_by_topic(
+    conv: Conversation,
+    max_turns: int = 10,
+    max_chars: int = 8000,
+) -> List[Conversation]:
+    """Split long conversations at natural topic boundaries.
+
+    Splitting heuristics:
+    1. User questions that change subject (low term overlap with previous)
+    2. Time gaps between turns (if timestamps available)
+    3. Explicit topic markers ("Now, about X...", "Moving on to...")
+
+    Each sub-conversation gets:
+    - Same source_path, source_title, source_url
+    - New conversation_id: f"{original_id}_part{N}"
+    - Subset of turns with re-indexed turn_index
+    """
+    # If conversation is within limits, return as-is
+    if len(conv.turns) <= max_turns and conv.total_char_count <= max_chars:
+        return [conv]
+
+    # Find split points based on topic shifts
+    split_indices: List[int] = [0]  # Always start with first turn
+
+    topic_shift_patterns = [
+        "moving on",
+        "now, about",
+        "changing topic",
+        "different question",
+        "unrelated,",
+        "on another note",
+        "separately,",
+        "new question",
+    ]
+
+    for i in range(1, len(conv.turns)):
+        current_turn = conv.turns[i]
+        prev_turn = conv.turns[i - 1]
+
+        # Check for explicit topic shift markers
+        user_lower = current_turn.user_prompt.lower()
+        has_topic_marker = any(pattern in user_lower for pattern in topic_shift_patterns)
+
+        # Check for low term overlap (topic change)
+        prev_terms = set(prev_turn.key_terms)
+        curr_terms = set(current_turn.key_terms)
+        if prev_terms and curr_terms:
+            overlap = len(prev_terms & curr_terms) / max(len(prev_terms), len(curr_terms))
+            low_overlap = overlap < 0.2
+        else:
+            low_overlap = False
+
+        # Mark as split point if topic shift detected
+        if has_topic_marker or low_overlap:
+            # Ensure we don't create tiny splits
+            if i - split_indices[-1] >= 2:
+                split_indices.append(i)
+
+    # Add end index
+    split_indices.append(len(conv.turns))
+
+    # If no good split points found, split evenly
+    if len(split_indices) <= 2 and len(conv.turns) > max_turns:
+        split_indices = list(range(0, len(conv.turns), max_turns))
+        if split_indices[-1] != len(conv.turns):
+            split_indices.append(len(conv.turns))
+
+    # Build sub-conversations
+    sub_conversations: List[Conversation] = []
+    for part_num, (start, end) in enumerate(zip(split_indices[:-1], split_indices[1:])):
+        sub_turns = conv.turns[start:end]
+        if not sub_turns:
+            continue
+
+        # Re-index turns and update conversation_id
+        new_conv_id = f"{conv.conversation_id}_part{part_num + 1}"
+        reindexed_turns: List[ChatTurn] = []
+        for new_idx, turn in enumerate(sub_turns):
+            reindexed_turn = ChatTurn(
+                context_id=turn.context_id,
+                turn_index=new_idx,
+                conversation_id=new_conv_id,
+                source_path=turn.source_path,
+                source_title=turn.source_title,
+                source_url=turn.source_url,
+                user_timestamp=turn.user_timestamp,
+                user_prompt=turn.user_prompt,
+                assistant_answer=turn.assistant_answer,
+                assistant_char_count=turn.assistant_char_count,
+                score=turn.score,
+                signals=turn.signals,
+                key_terms=turn.key_terms,
+                key_points=turn.key_points,
+            )
+            reindexed_turns.append(reindexed_turn)
+
+        # Recompute aggregates for sub-conversation
+        agg_score, agg_signals = detect_conversation_signals(reindexed_turns)
+        total_chars = sum(t.assistant_char_count for t in reindexed_turns)
+
+        # Extract key topics for this sub-conversation
+        all_terms = []
+        for t in reindexed_turns:
+            all_terms.extend(t.key_terms)
+        sub_topics = extract_key_terms(" ".join(all_terms), limit=8)
+
+        sub_conv = Conversation(
+            conversation_id=new_conv_id,
+            source_path=conv.source_path,
+            source_title=conv.source_title,
+            source_url=conv.source_url,
+            turns=reindexed_turns,
+            total_char_count=total_chars,
+            aggregate_score=agg_score,
+            aggregate_signals=agg_signals,
+            key_topics=sub_topics,
+        )
+        sub_conversations.append(sub_conv)
+
+    return sub_conversations if sub_conversations else [conv]
+
+
+def harvest_conversations(
+    chat_root: Path,
+    seen_conversation_ids: set[str],
+    state_tracker: Optional[Any],
+    date_filter: Optional[DateRangeFilter],
+    args: argparse.Namespace,
+) -> List[Conversation]:
+    """Harvest full conversations instead of individual turns.
+
+    Args:
+        chat_root: Root directory containing chat markdown exports
+        seen_conversation_ids: Set of conversation IDs already processed
+        state_tracker: Optional state tracker for filtering processed files
+        date_filter: Optional date range filter
+        args: CLI arguments namespace
+
+    Returns:
+        List of Conversation objects ready for processing
+    """
+    conversations: List[Conversation] = []
+    files = sorted(
+        (p for p in chat_root.rglob("*.md")),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    # Apply filters
+    if date_filter:
+        files = [f for f in files if date_filter.matches(f)]
+    if args.unprocessed_only and state_tracker:
+        files = [f for f in files if not state_tracker.is_file_processed(f)]
+
+    if args.max_chat_files:
+        files = files[: args.max_chat_files]
+
+    # Get conversation limits from args (with defaults)
+    max_turns = getattr(args, "conversation_max_turns", 10)
+    max_chars = getattr(args, "conversation_max_chars", 8000)
+
+    for path in files:
+        try:
+            text = path.read_text()
+        except Exception:
+            continue
+
+        if "\n---" in text:
+            header, body = text.split("\n---", 1)
+        else:
+            header, body = text, ""
+
+        metadata = parse_chat_metadata(header)
+        entries = parse_chat_entries(body)
+        raw_turns = extract_turns(entries)
+
+        if not raw_turns:
+            continue
+
+        # Build conversation
+        conv = build_conversation(path, metadata, raw_turns, args)
+        if conv is None:
+            continue
+
+        # Skip if already processed
+        if conv.conversation_id in seen_conversation_ids:
+            continue
+
+        # Filter by minimum aggregate score
+        min_score = getattr(args, "min_score", 1.2)
+        if conv.aggregate_score < min_score:
+            continue
+
+        # Split long conversations
+        sub_convs = split_conversation_by_topic(conv, max_turns, max_chars)
+
+        # Add conversations (filtering already-seen sub-conversations)
+        for sub_conv in sub_convs:
+            if sub_conv.conversation_id not in seen_conversation_ids:
+                conversations.append(sub_conv)
+
+        # Check if we've hit the max
+        max_conversations = getattr(args, "max_contexts", 24)
+        if len(conversations) >= max_conversations:
+            break
+
+    return conversations
+
+
 __all__ = [
     "ChatTurn",
+    "Conversation",
     "DateRangeFilter",
     "harvest_chat_contexts",
+    "harvest_conversations",
     "detect_signals",
+    "detect_conversation_signals",
     "extract_key_terms",
     "extract_key_points",
     "parse_chat_metadata",
     "parse_chat_entries",
     "extract_turns",
+    "build_conversation",
+    "split_conversation_by_topic",
     "QUESTION_WORDS",
     "STOPWORDS",
     "ENTRY_RE",

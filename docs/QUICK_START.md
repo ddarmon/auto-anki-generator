@@ -118,9 +118,14 @@ The script looks for conversations with:
 ```
 collections/
 ├── auto_anki_agent.py          # Main script
+├── auto_anki/                  # Core Python package
+│   ├── contexts.py             # Conversation & ChatTurn dataclasses
+│   ├── codex.py                # Prompt builders
+│   ├── dedup.py                # Deduplication
+│   └── state.py                # State tracking (v2 schema)
 ├── README_AUTO_ANKI.md         # Full documentation
 ├── QUICK_START.md              # This file
-├── .auto_anki_agent_state.json # Processing state
+├── .auto_anki_agent_state.json # Processing state (v2 with seen_conversations)
 ├── Research_Learning.html      # Existing cards
 ├── Technology_Learning.html    # Existing cards
 ├── Moody_s_Learning.html       # Existing cards
@@ -128,6 +133,6 @@ collections/
     ├── proposed_cards_2025-11-08.md
     └── run-20251108-125440/
         ├── all_proposed_cards.json
-        ├── selected_contexts.json
+        ├── selected_conversations.json  # Full conversation context
         └── ...
 ```

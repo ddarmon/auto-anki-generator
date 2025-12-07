@@ -42,6 +42,7 @@ python3 auto_anki_agent.py \
 
 ## Command-Line Options
 
+### Core Options
 - `--date-range RANGE`: Filter conversations by date
   - Format: `2025-10` (entire month)
   - Format: `2025-10-01:2025-10-31` (specific range)
@@ -52,16 +53,26 @@ python3 auto_anki_agent.py \
 - `--state-file PATH`: Custom state file location
 - `--output-dir PATH`: Where to save run artifacts
 - `--cache-dir PATH`: Directory for parsed deck + semantic embedding cache (default: .deck_cache next to script)
-- `--max-contexts N`: Maximum contexts to gather per run (default: 24)
-- `--contexts-per-run N`: Contexts per codex exec call (default: 8)
+
+### Conversation Processing
+- `--max-contexts N`: Maximum conversations to gather per run (default: 24)
+- `--contexts-per-run N`: Conversations per codex exec call (default: 8)
+- `--conversation-max-turns N`: Split conversations longer than N turns (default: 10)
+- `--conversation-max-chars N`: Split conversations larger than N chars (default: 8000)
+
+### Two-Stage Pipeline
 - `--two-stage`: Enable two-stage LLM pipeline (stage-1 filter + stage-2 generator, **default: enabled**)
 - `--single-stage`: Disable two-stage pipeline and use single-stage card generation
 - `--codex-model-stage1 MODEL`: Codex model for fast stage-1 filtering (default: `gpt-5.1`)
 - `--codex-model-stage2 MODEL`: Codex model for stage-2 card generation (default: `gpt-5.1`)
+
+### Deduplication
 - `--similarity-threshold FLOAT`: String-based similarity threshold for dedup (default: 0.82)
 - `--dedup-method {string,semantic,hybrid}`: Choose dedup strategy (default: **hybrid**, auto-falls back to string if dependencies unavailable)
 - `--semantic-model NAME`: SentenceTransformers model for semantic dedup (default: all-MiniLM-L6-v2)
 - `--semantic-similarity-threshold FLOAT`: Cosine similarity threshold for semantic dedup (default: 0.85)
+
+### Other Options
 - `--dry-run`: Build prompts without calling codex
 - `--verbose`: Print progress information
 - `--codex-model MODEL`: Override default codex model (falls back to `gpt-5.1` if unset)
@@ -135,14 +146,22 @@ Tracks:
 
 ## Workflow
 
-1. **Script harvests** conversations from your ChatGPT export folder
+1. **Script harvests** full conversations from your ChatGPT export folder
+   - Each conversation contains multiple turns (user-assistant exchanges)
+   - Long conversations are split at topic boundaries
 2. **Applies filters**: date range, unprocessed-only flag
-3. **Scores contexts** using heuristics (questions, definitions, bullet points, etc.)
-4. **Deduplicates** against existing Anki cards (HTML collections)
-5. **Batches contexts** and sends to `codex exec`
-6. **Codex generates** proposed cards following Anki best practices
-7. **Outputs** markdown and/or JSON for review
-8. **Updates state** to track processed files
+3. **Scores conversations** using aggregate heuristics across all turns
+4. **Deduplicates** against existing Anki cards
+   - Only skips conversations where ALL turns are duplicates
+   - Annotates which turns are "already covered" for LLM guidance
+5. **Batches conversations** and sends to `codex exec`
+6. **Codex sees full learning journey**:
+   - Follow-up questions (indicates user confusion)
+   - Corrections in later turns
+   - Topic evolution across turns
+7. **Codex generates** proposed cards linked to specific turns
+8. **Outputs** markdown and/or JSON for review
+9. **Updates state** to track processed conversations
 
 ## Anki Best Practices (Embedded in Prompt)
 
@@ -246,37 +265,39 @@ rm .auto_anki_agent_state.json
         │
         ▼
 ┌──────────────────┐
-│  Harvest & Score │  ← DateRangeFilter
-│  Contexts        │  ← StateTracker
+│  Harvest Full   │  ← DateRangeFilter
+│  Conversations   │  ← StateTracker
+│  (multi-turn)    │  ← Topic Splitting
 └───────┬──────────┘
         │
         ▼
 ┌──────────────────┐
 │  Deduplicate vs  │  ← HTML Deck Parser
-│  Existing Cards  │
+│  Existing Cards  │  ← Annotate covered turns
 └───────┬──────────┘
         │
         ▼
 ┌──────────────────┐
 │  Batch & Build   │  ← Anki Best Practices
-│  Codex Prompts   │
+│  Conversation    │  ← Full learning journey
+│  Prompts         │
 └───────┬──────────┘
         │
         ▼
 ┌──────────────────┐
 │  Stage 1 (Filter)│  ← Fast model (e.g., gpt-5.1 w/ low reasoning)
 └───────┬──────────┘
-        │ (keep only best contexts)
+        │ (keep only best conversations)
         ▼
 ┌──────────────────┐
 │  Stage 2 (Cards) │  ← Strong model (e.g., gpt-5.1 w/ high reasoning)
-│  codex exec      │  ← LLM Decision Layer
+│  codex exec      │  ← LLM sees follow-ups, corrections
 └───────┬──────────┘
         │
         ▼
 ┌──────────────────┐
 │  Format Output   │  ← Markdown/JSON
-│  Update State    │
+│  Update State    │  ← Track seen_conversations
 └──────────────────┘
 ```
 
@@ -336,7 +357,10 @@ shiny run anki_review_ui.py
 ## Future Enhancements
 
 - [x] ~~Automatic HTML card import via AnkiConnect~~ ✅ **DONE!**
-- [ ] Tag taxonomy management
 - [x] ~~Semantic deduplication with embeddings~~ ✅ **DONE!** (SentenceTransformers + FAISS vector cache)
+- [x] ~~Conversation-level processing~~ ✅ **DONE!** (LLM sees full learning journey)
+- [x] ~~Two-stage LLM pipeline~~ ✅ **DONE!** (Fast filter + slow generation)
+- [ ] Tag taxonomy management
 - [ ] Multi-deck routing logic with ML
 - [ ] Topic distribution visualization
+- [ ] Active learning from user feedback

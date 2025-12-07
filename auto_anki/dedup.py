@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from auto_anki.cards import Card, normalize_text
-from auto_anki.contexts import ChatTurn
+from auto_anki.contexts import ChatTurn, Conversation
 
 try:
     import faiss  # type: ignore
@@ -330,11 +330,144 @@ def prune_contexts(
     return pruned
 
 
+def is_conversation_duplicate(
+    conversation: Conversation,
+    cards: List[Card],
+    threshold: float,
+    semantic_index: Optional[SemanticCardIndex] = None,
+    semantic_threshold: float = 0.85,
+) -> tuple[bool, List[int]]:
+    """Check if a conversation is duplicate against existing cards.
+
+    Returns:
+        Tuple of (all_turns_duplicate, list_of_duplicate_turn_indices)
+    """
+    duplicate_turns: List[int] = []
+
+    for turn in conversation.turns:
+        is_dup = False
+
+        # String-based check
+        if is_duplicate_context(turn, cards, threshold):
+            is_dup = True
+
+        # Semantic check if available
+        if not is_dup and semantic_index is not None:
+            if semantic_index.is_duplicate(turn, semantic_threshold):
+                is_dup = True
+
+        if is_dup:
+            duplicate_turns.append(turn.turn_index)
+
+    # Conversation is fully duplicate only if ALL turns are duplicates
+    all_duplicate = len(duplicate_turns) == len(conversation.turns)
+
+    return all_duplicate, duplicate_turns
+
+
+def prune_conversations(
+    conversations: List[Conversation],
+    cards: List[Card],
+    args: Any,
+) -> List[Conversation]:
+    """Filter conversations, marking turns that are already covered by existing cards.
+
+    Unlike per-turn deduplication, this:
+    1. Keeps conversations even if some turns are duplicates
+    2. Annotates which turns are "covered" so the LLM can skip them intelligently
+    3. Only removes entire conversations if ALL high-scoring turns are duplicates
+
+    Args:
+        conversations: List of Conversation objects to filter
+        cards: Existing cards to check against
+        args: CLI arguments namespace
+
+    Returns:
+        List of Conversation objects with duplicate_turns annotation
+    """
+    pruned: List[Conversation] = []
+    total = len(conversations)
+
+    # Build semantic index if needed
+    semantic_index: Optional[SemanticCardIndex] = None
+    dedup_method = getattr(args, "dedup_method", "hybrid")
+
+    if dedup_method in ("semantic", "hybrid"):
+        try:
+            from sentence_transformers import SentenceTransformer  # type: ignore
+            import numpy as _np  # type: ignore
+
+            if getattr(args, "verbose", False):
+                print("Building semantic index for conversation deduplication...")
+
+            semantic_index = SemanticCardIndex(
+                cards=cards,
+                sentence_transformer_cls=SentenceTransformer,
+                np_module=_np,
+                model_name=getattr(args, "semantic_model", "all-MiniLM-L6-v2"),
+                verbose=getattr(args, "verbose", False),
+                cache_dir=getattr(args, "cache_dir", None),
+            )
+        except ImportError:
+            if getattr(args, "verbose", False):
+                print(
+                    "⚠ Semantic dedup dependencies not found. Using string-based only."
+                )
+
+    string_threshold = getattr(args, "similarity_threshold", 0.82)
+    semantic_threshold = getattr(args, "semantic_similarity_threshold", 0.85)
+
+    for idx, conv in enumerate(
+        sorted(conversations, key=lambda c: c.aggregate_score, reverse=True), 1
+    ):
+        if getattr(args, "verbose", False):
+            print(
+                f"  Checking conversation {idx}/{total} ({len(conv.turns)} turns)...",
+                end="\r",
+            )
+
+        all_dup, dup_turns = is_conversation_duplicate(
+            conv,
+            cards,
+            string_threshold,
+            semantic_index,
+            semantic_threshold,
+        )
+
+        # Skip entire conversation only if ALL turns are duplicates
+        if all_dup:
+            if getattr(args, "verbose", False):
+                print(
+                    f"  Skipping conversation {idx}: all {len(conv.turns)} turns are duplicates"
+                )
+            continue
+
+        # Annotate the conversation with duplicate turn info
+        # This allows the LLM to know which turns are already covered
+        conv.aggregate_signals["duplicate_turns"] = dup_turns
+        conv.aggregate_signals["non_duplicate_turns"] = [
+            t.turn_index for t in conv.turns if t.turn_index not in dup_turns
+        ]
+
+        pruned.append(conv)
+
+    if getattr(args, "verbose", False):
+        dup_count = total - len(pruned)
+        print(
+            f"  Checked {total} conversations - {dup_count} fully duplicate, {len(pruned)} kept"
+        )
+
+    return pruned
+
+
 __all__ = [
     "Card",
     "ChatTurn",
+    "Conversation",
     "SemanticCardIndex",
     "quick_similarity",
     "is_duplicate_context",
+    "is_conversation_duplicate",
     "prune_contexts",
+    "prune_conversations",
 ]

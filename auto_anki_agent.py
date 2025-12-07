@@ -32,17 +32,26 @@ from pathlib import Path
 from typing import Dict, List
 
 from auto_anki.cards import Card, collect_decks
-from auto_anki.contexts import ChatTurn, DateRangeFilter, harvest_chat_contexts
+from auto_anki.contexts import (
+    ChatTurn,
+    Conversation,
+    DateRangeFilter,
+    harvest_chat_contexts,
+    harvest_conversations,
+)
 from auto_anki.codex import (
     build_codex_filter_prompt,
     build_codex_prompt,
+    build_conversation_prompt,
+    build_conversation_filter_prompt,
     chunked,
     format_cards_as_markdown,
+    format_conversation_cards_as_markdown,
     parse_codex_response_robust,
     run_codex_exec,
     run_codex_pipeline,
 )
-from auto_anki.dedup import prune_contexts
+from auto_anki.dedup import prune_contexts, prune_conversations
 from auto_anki.state import StateTracker, ensure_run_dir
 
 # Silence HuggingFace tokenizers fork/parallelism warnings
@@ -262,6 +271,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print additional progress information.",
     )
+    # Conversation-level processing (new default)
+    parser.add_argument(
+        "--conversation-max-turns",
+        type=int,
+        default=10,
+        help="Maximum turns to include per conversation before splitting (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--conversation-max-chars",
+        type=int,
+        default=8000,
+        help="Maximum total characters per conversation before splitting (default: %(default)s).",
+    )
     # Defaults
     parser.set_defaults(two_stage=True)
 
@@ -372,7 +394,7 @@ def main() -> None:
     # Initialize state tracker and filters
     state_tracker = StateTracker(state_path)
     date_filter = DateRangeFilter(args.date_range) if args.date_range else None
-    seen_ids = state_tracker.get_seen_context_ids()
+    seen_conversation_ids = state_tracker.get_seen_conversation_ids()
 
     # Load existing cards (with caching for speed)
     if args.verbose:
@@ -384,29 +406,53 @@ def main() -> None:
             print(f"Date filter: {date_filter.start_date} to {date_filter.end_date or 'now'}")
         if args.unprocessed_only:
             print("Mode: Unprocessed files only")
+        print("Mode: Conversation-level processing (full conversations sent to LLM)")
 
-    # Harvest and filter contexts
-    contexts = harvest_chat_contexts(chat_root, seen_ids, state_tracker, date_filter, args)
+    # Harvest full conversations (not individual turns)
+    conversations = harvest_conversations(
+        chat_root, seen_conversation_ids, state_tracker, date_filter, args
+    )
     if args.verbose:
-        print(f"Harvested {len(contexts)} raw contexts before pruning.")
-    contexts = prune_contexts(contexts, cards, args)
+        total_turns = sum(len(c.turns) for c in conversations)
+        print(f"Harvested {len(conversations)} conversations ({total_turns} total turns) before pruning.")
+
+    # Prune conversations against existing cards
+    conversations = prune_conversations(conversations, cards, args)
     if args.verbose:
-        print(f"{len(contexts)} contexts remain after dedup/score filtering.")
-    if not contexts:
-        print("No new contexts found; exiting.")
+        total_turns = sum(len(c.turns) for c in conversations)
+        print(f"{len(conversations)} conversations ({total_turns} turns) remain after dedup.")
+
+    if not conversations:
+        print("No new conversations found; exiting.")
         return
 
     # Prepare run directory
     run_dir = ensure_run_dir(output_dir)
     run_timestamp = datetime.now().isoformat()
-    (run_dir / "selected_contexts.json").write_text(
-        json.dumps([asdict(ctx) for ctx in contexts], indent=2)
+
+    # Save selected conversations (new format)
+    conversations_data = [
+        {
+            "conversation_id": conv.conversation_id,
+            "source_path": conv.source_path,
+            "source_title": conv.source_title,
+            "source_url": conv.source_url,
+            "total_char_count": conv.total_char_count,
+            "aggregate_score": conv.aggregate_score,
+            "aggregate_signals": conv.aggregate_signals,
+            "key_topics": conv.key_topics,
+            "turns": [asdict(turn) for turn in conv.turns],
+        }
+        for conv in conversations
+    ]
+    (run_dir / "selected_conversations.json").write_text(
+        json.dumps(conversations_data, indent=2)
     )
 
     cards_for_prompt = select_existing_cards_for_prompt(cards, args.max_existing_cards)
 
-    # Process chunks (optionally with two-stage pipeline)
-    new_seen_ids: List[str] = []
+    # Process conversation chunks (optionally with two-stage pipeline)
+    new_conversation_ids: List[str] = []
     all_proposed_cards: List[Dict[str, Any]] = []
     processed_files: set[Path] = set()
     chunk_stats: Dict[str, Any] = {
@@ -417,35 +463,36 @@ def main() -> None:
         "stage1_total": 0,
     }
 
-    total_chunks = (len(contexts) + args.contexts_per_run - 1) // args.contexts_per_run
+    # Batch conversations (using contexts_per_run as conversations per batch)
+    conversations_per_batch = args.contexts_per_run
+    total_chunks = (len(conversations) + conversations_per_batch - 1) // conversations_per_batch
     if args.verbose:
-        print(f"\nProcessing {len(contexts)} contexts in {total_chunks} chunk(s) of {args.contexts_per_run}...")
+        print(f"\nProcessing {len(conversations)} conversations in {total_chunks} batch(es)...")
 
-    for idx, chunk in enumerate(chunked(contexts, args.contexts_per_run), start=1):
+    for idx, chunk in enumerate(chunked(conversations, conversations_per_batch), start=1):
         if args.verbose:
+            chunk_turns = sum(len(c.turns) for c in chunk)
             print(f"\n{'='*60}")
-            print(f"Chunk {idx}/{total_chunks}: Processing {len(chunk)} contexts")
+            print(f"Batch {idx}/{total_chunks}: {len(chunk)} conversations ({chunk_turns} turns)")
             print(f"{'='*60}")
 
-        # Optionally run stage-1 filter
+        # Optionally run stage-1 filter (conversation-level)
         filtered_chunk = chunk
         if args.two_stage:
             if args.verbose:
-                print("  Stage 1: filtering contexts before card generation...")
+                print("  Stage 1: filtering conversations before card generation...")
 
-            filter_prompt = build_codex_filter_prompt(chunk, args)
+            filter_prompt = build_conversation_filter_prompt(chunk, args)
 
             if args.dry_run:
-                # Save stage-1 prompt and a generic stage-2 prompt template
-                prompt_stage1_path = run_dir / f"prompt_stage1_chunk_{idx:02d}.txt"
+                prompt_stage1_path = run_dir / f"prompt_stage1_batch_{idx:02d}.txt"
                 prompt_stage1_path.write_text(filter_prompt)
-                prompt_stage2_path = run_dir / f"prompt_chunk_{idx:02d}.txt"
-                stage2_preview = build_codex_prompt(cards_for_prompt, chunk, args)
+                prompt_stage2_path = run_dir / f"prompt_batch_{idx:02d}.txt"
+                stage2_preview = build_conversation_prompt(cards_for_prompt, chunk, args)
                 prompt_stage2_path.write_text(stage2_preview)
                 if args.verbose:
-                    print(f"[dry-run] Saved stage-1 prompt for chunk {idx} at {prompt_stage1_path}")
-                    print(f"[dry-run] Saved stage-2 preview prompt for chunk {idx} at {prompt_stage2_path}")
-                # Skip actual codex calls in dry-run
+                    print(f"[dry-run] Saved stage-1 prompt at {prompt_stage1_path}")
+                    print(f"[dry-run] Saved stage-2 preview prompt at {prompt_stage2_path}")
                 continue
 
             try:
@@ -461,72 +508,63 @@ def main() -> None:
                 )
 
                 if args.verbose:
-                    print(f"✓ Received response from stage-1 codex (chunk {idx})")
-                    print("  Parsing JSON response for filter decisions...")
+                    print(f"✓ Received stage-1 response (batch {idx})")
 
                 response_json_stage1 = parse_codex_response_robust(
                     response_text_stage1, idx, run_dir, args.verbose, label="_stage1"
                 )
 
                 if response_json_stage1 is None:
-                    print(f"⚠️  Stage-1 parsing FAILED for chunk {idx}; falling back to sending all contexts to stage 2.")
-                    kept_ids: Optional[set[str]] = None
+                    print(f"⚠️  Stage-1 parsing FAILED; sending all conversations to stage 2.")
+                    kept_conv_ids: Optional[set[str]] = None
                 else:
                     decisions = response_json_stage1.get("filter_decisions", [])
-                    kept_ids = {
-                        d.get("context_id")
+                    kept_conv_ids = {
+                        d.get("conversation_id")
                         for d in decisions
-                        if isinstance(d, dict) and d.get("keep") is True and d.get("context_id")
+                        if isinstance(d, dict) and d.get("keep") is True and d.get("conversation_id")
                     }
-                    total_decisions = len(decisions)
-                    kept_count = len(kept_ids)
+                    kept_count = len(kept_conv_ids)
                     chunk_stats["stage1_kept"] += kept_count
-                    chunk_stats["stage1_total"] += max(len(chunk), total_decisions or len(chunk))
+                    chunk_stats["stage1_total"] += len(chunk)
                     if args.verbose:
-                        print(f"  Stage-1 kept {kept_count}/{len(chunk)} contexts for stage 2.")
+                        print(f"  Stage-1 kept {kept_count}/{len(chunk)} conversations.")
 
-                if kept_ids:
-                    filtered_chunk = [ctx for ctx in chunk if ctx.context_id in kept_ids]
+                if kept_conv_ids:
+                    filtered_chunk = [c for c in chunk if c.conversation_id in kept_conv_ids]
                 else:
                     filtered_chunk = chunk
 
                 if not filtered_chunk:
                     if args.verbose:
-                        print(f"  Stage-1 filtered out all contexts in chunk {idx}; skipping stage 2.")
-                    for ctx in chunk:
-                        new_seen_ids.append(ctx.context_id)
-                        processed_files.add(Path(ctx.source_path))
+                        print(f"  Stage-1 filtered all conversations in batch {idx}.")
+                    for conv in chunk:
+                        new_conversation_ids.append(conv.conversation_id)
+                        processed_files.add(Path(conv.source_path))
                     continue
 
             except Exception as e:
-                # Stage-1 failure: log and fall back to single-stage behaviour
-                error_file = run_dir / f"codex_stage1_ERROR_chunk_{idx:02d}.txt"
-                error_file.write_text(f"Unexpected error in stage-1 for chunk {idx}:\n\n{str(e)}")
-                print(f"⚠️  Stage-1 ERROR for chunk {idx}: {str(e)[:100]}")
-                print(f"   Error saved to: {error_file}")
-                print("   Falling back to sending all contexts to stage 2.")
+                error_file = run_dir / f"codex_stage1_ERROR_batch_{idx:02d}.txt"
+                error_file.write_text(f"Stage-1 error for batch {idx}:\n\n{str(e)}")
+                print(f"⚠️  Stage-1 ERROR: {str(e)[:100]}")
+                print("   Falling back to sending all conversations to stage 2.")
                 filtered_chunk = chunk
 
-        # Stage-2: full card generation
-        prompt = build_codex_prompt(cards_for_prompt, filtered_chunk, args)
+        # Stage-2: conversation-level card generation
+        prompt = build_conversation_prompt(cards_for_prompt, filtered_chunk, args)
         if args.dry_run:
-            prompt_path = run_dir / f"prompt_chunk_{idx:02d}.txt"
+            prompt_path = run_dir / f"prompt_batch_{idx:02d}.txt"
             prompt_path.write_text(prompt)
             if args.verbose:
-                print(f"[dry-run] Saved prompt for chunk {idx} at {prompt_path}")
+                print(f"[dry-run] Saved prompt at {prompt_path}")
             continue
 
         if args.verbose:
-            print(f"Calling codex exec for chunk {idx} (stage 2)...")
-            print(f"  (This may take 30-60 seconds depending on model and context size)")
+            print(f"Calling codex for batch {idx} (stage 2)...")
 
         try:
-            # Choose appropriate model and reasoning effort for stage 2
             stage2_model = args.codex_model_stage2 if args.two_stage else None
-            if args.two_stage:
-                stage2_reasoning = args.model_reasoning_effort or "high"
-            else:
-                stage2_reasoning = args.model_reasoning_effort or "medium"
+            stage2_reasoning = args.model_reasoning_effort or ("high" if args.two_stage else "medium")
 
             response_text = run_codex_exec(
                 prompt,
@@ -539,51 +577,44 @@ def main() -> None:
             )
 
             if args.verbose:
-                print(f"✓ Received response from codex (chunk {idx})")
-                print(f"  Parsing JSON response...")
+                print(f"✓ Received response (batch {idx})")
 
-            # Use robust multi-strategy parser
             response_json = parse_codex_response_robust(
                 response_text, idx, run_dir, args.verbose, label=""
             )
 
             if response_json is None:
-                # Parsing failed - log and continue
                 chunk_stats["failed"] += 1
-                print(f"⚠️  Chunk {idx} FAILED: Could not parse JSON response")
-                print(f"   Debug info saved to: {run_dir}/codex_FAILED_chunk_{idx:02d}.txt")
-                print(f"   Continuing with remaining chunks...")
+                print(f"⚠️  Batch {idx} FAILED: Could not parse JSON")
                 continue
 
-            # Success! Track the results
             chunk_stats["success"] += 1
 
-            # Track proposed cards and processed files
-            cards_in_chunk = 0
+            # Track proposed cards
+            cards_in_batch = 0
             if "cards" in response_json:
-                cards_in_chunk = len(response_json["cards"])
+                cards_in_batch = len(response_json["cards"])
                 all_proposed_cards.extend(response_json["cards"])
-                chunk_stats["total_cards"] += cards_in_chunk
+                chunk_stats["total_cards"] += cards_in_batch
 
-            skipped_in_chunk = len(response_json.get("skipped", []))
+            skipped_convs = len(response_json.get("skipped_conversations", []))
+            skipped_turns = len(response_json.get("skipped_turns", []))
 
             if args.verbose:
-                print(f"✓ Chunk {idx} complete:")
-                print(f"    {cards_in_chunk} cards proposed")
-                print(f"    {skipped_in_chunk} contexts skipped")
+                print(f"✓ Batch {idx} complete:")
+                print(f"    {cards_in_batch} cards proposed")
+                print(f"    {skipped_convs} conversations skipped, {skipped_turns} turns skipped")
 
-            for ctx in filtered_chunk:
-                new_seen_ids.append(ctx.context_id)
-                processed_files.add(Path(ctx.source_path))
+            # Track processed conversations
+            for conv in filtered_chunk:
+                new_conversation_ids.append(conv.conversation_id)
+                processed_files.add(Path(conv.source_path))
 
         except Exception as e:
-            # Unexpected error - log and continue
             chunk_stats["failed"] += 1
-            error_file = run_dir / f"codex_ERROR_chunk_{idx:02d}.txt"
-            error_file.write_text(f"Unexpected error processing chunk {idx}:\n\n{str(e)}")
-            print(f"⚠️  Chunk {idx} ERROR: {str(e)[:100]}")
-            print(f"   Error saved to: {error_file}")
-            print(f"   Continuing with remaining chunks...")
+            error_file = run_dir / f"codex_ERROR_batch_{idx:02d}.txt"
+            error_file.write_text(f"Error processing batch {idx}:\n\n{str(e)}")
+            print(f"⚠️  Batch {idx} ERROR: {str(e)[:100]}")
             continue
 
     if not args.dry_run:
@@ -592,9 +623,11 @@ def main() -> None:
             print(f"Generating output files...")
             print(f"{'='*60}")
 
-        # Generate output files
+        # Generate output files (conversation mode)
         if args.output_format in ["markdown", "both"]:
-            markdown_content = format_cards_as_markdown(all_proposed_cards, contexts, run_timestamp)
+            markdown_content = format_conversation_cards_as_markdown(
+                all_proposed_cards, conversations, run_timestamp
+            )
             markdown_path = output_dir / f"proposed_cards_{datetime.now().strftime('%Y-%m-%d')}.md"
             markdown_path.write_text(markdown_content)
             if args.verbose:
@@ -610,16 +643,21 @@ def main() -> None:
             else:
                 print(f"JSON cards saved to: {json_path}")
 
-        # Update state
+        # Update state (conversation-level tracking)
         if args.verbose:
             print(f"\nUpdating state file...")
-        state_tracker.add_context_ids(new_seen_ids)
+        state_tracker.add_conversation_ids(new_conversation_ids)
         for file_path in processed_files:
-            file_cards = sum(1 for card in all_proposed_cards
-                           if any(ctx.source_path == str(file_path) and ctx.context_id == card.get("context_id")
-                                 for ctx in contexts))
+            file_cards = sum(
+                1 for card in all_proposed_cards
+                if any(
+                    conv.source_path == str(file_path)
+                    and conv.conversation_id == card.get("conversation_id")
+                    for conv in conversations
+                )
+            )
             state_tracker.mark_file_processed(file_path, file_cards)
-        state_tracker.record_run(run_dir, len(new_seen_ids))
+        state_tracker.record_run(run_dir, len(new_conversation_ids), len(new_conversation_ids))
         state_tracker.save()
 
         if args.verbose:
@@ -627,24 +665,24 @@ def main() -> None:
             print(f"\n{'='*60}")
             print(f"SUMMARY")
             print(f"{'='*60}")
-            print(f"Chunks successful:     {chunk_stats['success']}/{total_chunks}")
-            print(f"Chunks failed:         {chunk_stats['failed']}/{total_chunks}")
-            print(f"Contexts processed:    {len(new_seen_ids)}")
-            print(f"Cards generated:       {chunk_stats['total_cards']}")
-            print(f"Files processed:       {len(processed_files)}")
-            print(f"Run artifacts:         {run_dir}")
+            print(f"Batches successful:      {chunk_stats['success']}/{total_chunks}")
+            print(f"Batches failed:          {chunk_stats['failed']}/{total_chunks}")
+            print(f"Conversations processed: {len(new_conversation_ids)}")
+            print(f"Cards generated:         {chunk_stats['total_cards']}")
+            print(f"Files processed:         {len(processed_files)}")
+            print(f"Run artifacts:           {run_dir}")
             if chunk_stats['failed'] > 0:
-                print(f"\n⚠️  {chunk_stats['failed']} chunk(s) failed - check {run_dir} for details")
+                print(f"\n⚠️  {chunk_stats['failed']} batch(es) failed - check {run_dir}")
             print(f"{'='*60}\n")
         else:
             status = "✓" if chunk_stats['failed'] == 0 else "⚠️"
-            print(f"{status} Run complete: {chunk_stats['success']}/{total_chunks} chunks successful")
-            print(f"Generated {chunk_stats['total_cards']} proposed cards from {len(new_seen_ids)} contexts")
+            print(f"{status} Run complete: {chunk_stats['success']}/{total_chunks} batches successful")
+            print(f"Generated {chunk_stats['total_cards']} cards from {len(new_conversation_ids)} conversations")
             if chunk_stats['failed'] > 0:
-                print(f"⚠️  {chunk_stats['failed']} chunk(s) failed - check {run_dir} for details")
+                print(f"⚠️  {chunk_stats['failed']} batch(es) failed - check {run_dir}")
             print(f"Run artifacts saved to {run_dir}")
     else:
-        print(f"[dry-run] Contexts + prompts saved to {run_dir}. No state updates.")
+        print(f"[dry-run] Conversations + prompts saved to {run_dir}. No state updates.")
 
 
 if __name__ == "__main__":

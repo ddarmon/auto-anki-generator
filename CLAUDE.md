@@ -34,41 +34,51 @@ generation to an LLM "decision layer" that understands:
 
     1. HARVEST PHASE
        ├─ Parse existing Anki decks (HTML) → Card objects
-       ├─ Scan ChatGPT export folder (markdown) → ChatTurn objects
+       ├─ Scan ChatGPT export folder (markdown) → Conversation objects
+       │  └─ Each Conversation contains multiple ChatTurn objects
+       ├─ Split long conversations at topic boundaries
        └─ Apply filters: DateRangeFilter, StateTracker
 
     2. SCORING PHASE
-       ├─ Heuristic scoring for each ChatTurn
+       ├─ Aggregate scoring across conversation turns
        │  ├─ Question signals (what/why/how)
        │  ├─ Definition signals (is defined as, stands for)
        │  ├─ Structure signals (bullet points, code blocks)
        │  └─ Quality signals (length, complexity)
-       └─ Threshold filtering (min_score)
+       ├─ Extract key topics from all turns
+       └─ Threshold filtering (min_score on aggregate)
 
     3. DEDUPLICATION PHASE
-       ├─ String similarity vs existing cards (SequenceMatcher)
-       ├─ Threshold-based filtering (similarity_threshold)
-       └─ Remove redundant contexts
+       ├─ Conversation-level deduplication
+       │  ├─ Check if ALL turns are duplicates → skip entire conversation
+       │  ├─ Annotate which turns are "already covered"
+       │  └─ LLM can skip covered turns intelligently
+       ├─ String + semantic similarity (hybrid mode)
+       └─ Preserve conversations with any novel content
 
     4. BATCHING PHASE
-       ├─ Group contexts into batches (contexts_per_run)
+       ├─ Group conversations into batches (contexts_per_run)
        ├─ Build prompts with:
        │  ├─ System instructions (Anki best practices)
        │  ├─ Existing cards summary (for dedup awareness)
-       │  └─ Context batch (user-assistant pairs)
-       └─ Cap total contexts (max_contexts)
+       │  └─ Full conversations with all turns
+       └─ Cap total conversations (max_contexts)
 
     5. CODEX PHASE
        ├─ Call `codex exec` with JSON contract
-       ├─ LLM decides: create card / skip / note
-       ├─ Parse JSON response (with repair_json fallback)
-       └─ Collect proposed cards
+       ├─ LLM sees full learning journey:
+       │  ├─ Follow-up questions (indicates confusion)
+       │  ├─ Corrections in later turns
+       │  └─ Topic evolution across turns
+       ├─ LLM decides: create cards / skip turns / note insights
+       └─ Cards linked to specific turns via (conversation_id, turn_index)
 
     6. OUTPUT PHASE
        ├─ Save artifacts to run directory
+       │  └─ selected_conversations.json (full conversation context)
        ├─ Generate markdown preview
        ├─ Generate JSON for automation
-       └─ Update state file
+       └─ Update state file (seen_conversations)
 
 ## Key Components
 
@@ -88,20 +98,42 @@ class Card:
     url: Optional[str]  # Source URL (if from chat)
 ```
 
+#### `Conversation` (dataclass)
+
+Represents a full ChatGPT conversation containing multiple turns.
+
+``` python
+@dataclass
+class Conversation:
+    conversation_id: str           # SHA256(source_path + first_timestamp)
+    source_path: str
+    source_title: Optional[str]
+    source_url: Optional[str]
+    turns: List[ChatTurn]          # Ordered list of turns
+    total_char_count: int          # Sum of all assistant responses
+    aggregate_score: float         # Combined score across turns
+    aggregate_signals: Dict        # Merged signals + duplicate_turns info
+    key_topics: List[str]          # Extracted from all turns
+```
+
 #### `ChatTurn` (dataclass)
 
-Represents a user-assistant exchange from ChatGPT.
+Represents a single user-assistant exchange within a conversation.
 
 ``` python
 @dataclass
 class ChatTurn:
-    user_prompt: str         # User's question/request
-    assistant_answer: str    # Assistant's response
-    context_id: str          # Unique hash
-    source_path: Path        # Originating file
-    score: float             # Heuristic quality score
-    signals: Dict[str, Any]  # Why it scored this way
-    url: Optional[str]       # Chat URL if available
+    context_id: str              # Unique hash for this turn
+    turn_index: int              # Position in conversation (0-indexed)
+    conversation_id: str         # Link to parent Conversation
+    source_path: str             # Originating file
+    source_title: Optional[str]
+    source_url: Optional[str]
+    user_prompt: str             # User's question/request
+    assistant_answer: str        # Assistant's response
+    score: float                 # Heuristic quality score
+    signals: Dict[str, Any]      # Why it scored this way
+    key_terms: List[str]         # Extracted key terms
 ```
 
 ### Core Classes
@@ -118,9 +150,11 @@ Filters conversation files by date.
 Manages `.auto_anki_agent_state.json` for incremental processing.
 
 -   Tracks processed files
--   Stores seen context IDs
+-   Stores seen context IDs (legacy, preserved for compatibility)
+-   Stores seen conversation IDs (v2 schema)
 -   Records run history
 -   Enables `--unprocessed-only` mode
+-   Auto-migrates from v1 to v2 schema on first run
 
 ### Key Functions
 
@@ -132,14 +166,17 @@ Parses HTML Anki deck exports using BeautifulSoup.
 -   Handles malformed HTML gracefully
 -   Returns list of existing cards for deduplication
 
-#### `harvest_chat_contexts(...) -> List[ChatTurn]`
+#### `harvest_conversations(...) -> List[Conversation]`
 
-Walks chat export directory and extracts user-assistant pairs.
+Walks chat export directory and extracts full conversations.
 
--   Parses markdown conversation files
+-   Parses markdown conversation files into Conversation objects
+-   Each Conversation contains multiple ChatTurn objects
+-   Splits long conversations at topic boundaries (configurable limits)
 -   Applies date range filtering
 -   Applies state-based filtering (unprocessed-only)
--   Scores each context using `detect_signals()`
+-   Computes aggregate scores across all turns
+-   Extracts key topics from conversation content
 
 #### `detect_signals(user_text, assistant_text) -> Tuple[float, Dict]`
 
@@ -161,28 +198,38 @@ Heuristic scoring function that identifies quality signals:
 
 Returns: `(total_score, signals_dict)`
 
-#### `deduplicate / prune_contexts(contexts, cards, args) -> List[ChatTurn]`
+#### `prune_conversations(conversations, cards, args) -> List[Conversation]`
 
-Filters contexts that are too similar to existing cards.
+Filters and annotates conversations based on similarity to existing cards.
 
+-   Conversation-level deduplication (not per-turn)
+-   Only removes conversations where ALL turns are duplicates
+-   Annotates `duplicate_turns` and `non_duplicate_turns` in conversation signals
+-   LLM can use annotations to skip already-covered content
 -   String-based dedup: `SequenceMatcher.ratio()` over normalized text
 -   Semantic dedup: optional SentenceTransformers embeddings via
     `--dedup-method semantic` / `hybrid`
 -   String threshold: `--similarity-threshold` (default: 0.82)
 -   Semantic threshold: `--semantic-similarity-threshold` (default: 0.85)
--   Helps avoid generating redundant cards
 
-#### `build_codex_prompt(cards, contexts, args) -> str`
+#### `build_conversation_prompt(cards, conversations, args) -> str`
 
-Constructs the prompt sent to `codex exec`.
+Constructs the conversation-aware prompt sent to `codex exec`.
 
 **Prompt structure:**
 
-1.  System instructions (Anki best practices)
-2.  JSON contract specification
+1.  System instructions (Anki best practices + conversation analysis)
+2.  JSON contract specification (includes `conversation_id`, `turn_index`, `depends_on`)
 3.  Existing cards summary (compact)
-4.  Contexts to evaluate (full detail)
+4.  Full conversations with all turns (enables learning journey analysis)
 5.  Output format requirements
+
+**LLM capabilities enabled by conversation context:**
+
+-   See follow-up questions that indicate user confusion
+-   Skip early turns if later corrected
+-   Create coherent card sets that build on each other
+-   Use `depends_on` field for card ordering
 
 #### `call_codex_exec(prompt, args) -> Dict`
 
@@ -234,7 +281,8 @@ Generates human-readable card preview.
     └── auto_anki_runs/              # Output directory
         ├── proposed_cards_YYYY-MM-DD.md
         └── run-YYYYMMDD-HHMMSS/
-            ├── selected_contexts.json
+            ├── selected_conversations.json        # Full conversation context (v2)
+            ├── selected_contexts.json             # Legacy per-turn format (v1)
             ├── codex_response_chunk_01.json
             ├── codex_parsed_response_chunk_01.json
             ├── all_proposed_cards.json
@@ -249,27 +297,30 @@ Generates human-readable card preview.
 
 1.  This file (CLAUDE.md) - architecture overview
 2.  `auto_anki/cards.py` - `Card`, HTML parsing, deck caching
-3.  `auto_anki/contexts.py` - `ChatTurn`, `detect_signals()`, harvesting logic
-4.  `auto_anki/dedup.py` - `SemanticCardIndex`, `prune_contexts()`
-5.  `auto_anki/codex.py` - `build_codex_prompt()`, `run_codex_pipeline()`
-6.  `auto_anki/state.py` - `StateTracker`, `ensure_run_dir()`
+3.  `auto_anki/contexts.py` - `Conversation`, `ChatTurn`, `harvest_conversations()`
+4.  `auto_anki/dedup.py` - `SemanticCardIndex`, `prune_conversations()`
+5.  `auto_anki/codex.py` - `build_conversation_prompt()`, `run_codex_pipeline()`
+6.  `auto_anki/state.py` - `StateTracker`, state migration, `ensure_run_dir()`
 
 **Key configuration points (via CLI defaults):**
 
--   `DEFAULT_MAX_CONTEXTS = 24` - contexts per run
+-   `DEFAULT_MAX_CONTEXTS = 24` - conversations per run
 -   `DEFAULT_CONTEXTS_PER_RUN = 8` - batch size
--   `DEFAULT_MIN_SCORE = 1.2` - quality threshold
+-   `DEFAULT_MIN_SCORE = 1.2` - quality threshold (aggregate score)
 -   `DEFAULT_SIMILARITY_THRESHOLD = 0.82` - string dedup threshold
 -   `DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD = 0.85` - semantic dedup threshold
--   `DEFAULT_PER_FILE_LIMIT = 3` - max contexts per conversation
+-   `--conversation-max-turns = 10` - split conversations longer than this
+-   `--conversation-max-chars = 8000` - split conversations larger than this
 
 ### Debugging a Run
 
 **Check these in order:**
 
 1.  State file: `.auto_anki_agent_state.json` - what's processed?
+    -   Check `state_version` (should be 2)
+    -   Check `seen_conversations` list
 2.  Run directory: `auto_anki_runs/run-YYYYMMDD-HHMMSS/`
-    -   `selected_contexts.json` - what got scored/selected?
+    -   `selected_conversations.json` - full conversations with turns
     -   `codex_response_chunk_*.json` - raw LLM output
     -   `codex_parsed_response_chunk_*.json` - parsed cards
 3.  Markdown output: `proposed_cards_YYYY-MM-DD.md` - final result
@@ -477,12 +528,14 @@ python3 auto_anki_agent.py \
 -   Stdout: JSON response
 -   Args: `--model`, `--reasoning-effort`, custom args
 
-**Response schema:**
+**Response schema (conversation-aware):**
 
 ``` json
 {
-  "generated_cards": [
+  "cards": [
     {
+      "conversation_id": "abc123",
+      "turn_index": 2,
       "context_id": "hash123",
       "deck": "Research_Learning",
       "front": "What is...",
@@ -490,14 +543,25 @@ python3 auto_anki_agent.py \
       "card_style": "basic",
       "confidence": 0.85,
       "tags": ["ml", "concepts"],
+      "depends_on": ["hash122"],
       "notes": "Rationale for creation"
     }
   ],
-  "skipped_contexts": [
+  "skipped_conversations": [
     {
-      "context_id": "hash456",
-      "reason": "Too vague, lacks concrete facts"
+      "conversation_id": "def456",
+      "reason": "All turns already covered by existing cards"
     }
+  ],
+  "skipped_turns": [
+    {
+      "conversation_id": "abc123",
+      "turn_index": 0,
+      "reason": "Corrected in later turn"
+    }
+  ],
+  "learning_insights": [
+    "User struggled with X concept across multiple turns"
   ]
 }
 ```
@@ -591,17 +655,22 @@ This project has **significant** planned enhancements documented in
 
 ### Highest Priority (from roadmap)
 
-1.  ~~**Semantic deduplication**~~ ✅ **INITIAL IMPLEMENTATION**
+1.  ~~**Semantic deduplication**~~ ✅ **DONE!**
     - Embeddings + FAISS vector cache for better duplicate detection
     - Hybrid string + embedding-based dedup (see `SemanticCardIndex`)
     - CLI: `--dedup-method semantic|hybrid`, `--semantic-*` flags
 2.  ~~**Interactive review mode**~~ ✅ **DONE!**
-3.  **Two-stage LLM pipeline** - Fast pre-filter + slow generation
+3.  ~~**Two-stage LLM pipeline**~~ ✅ **DONE!**
     - Initial implementation available via `--two-stage`
     - Stage 1: filter contexts (`gpt-5.1` with `model_reasoning_effort=low` by default)
     - Stage 2: generate cards (`gpt-5.1` with `model_reasoning_effort=high` by default)
 4.  ~~**AnkiConnect integration**~~ ✅ **DONE!**
-5.  **Active learning** - Feedback loop to improve quality over time
+5.  ~~**Conversation-level processing**~~ ✅ **DONE!**
+    - Full conversations sent to LLM instead of individual turns
+    - LLM sees learning journey, follow-ups, corrections
+    - Topic-boundary splitting for long conversations
+    - State schema v2 with automatic migration
+6.  **Active learning** - Feedback loop to improve quality over time
 
 ### Architecture Improvements
 
@@ -699,24 +768,29 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 ### Key Functions
 
 -   `parse_decks()` - Load existing cards
--   `harvest_chat_contexts()` - Extract conversations
--   `detect_signals()` - Score contexts
--   `deduplicate()` - Filter similar content
--   `build_codex_prompt()` - LLM interface
--   `call_codex_exec()` - LLM invocation
+-   `harvest_conversations()` - Extract full conversations
+-   `split_conversation_by_topic()` - Split long conversations
+-   `detect_signals()` - Score individual turns
+-   `detect_conversation_signals()` - Aggregate scoring
+-   `prune_conversations()` - Filter/annotate duplicates
+-   `build_conversation_prompt()` - LLM interface
+-   `run_codex_exec()` - LLM invocation
 
 ### Key Data Structures
 
 -   `Card` - Flashcard (front/back/deck/tags)
--   `ChatTurn` - Conversation exchange + metadata
--   `StateTracker` - Incremental processing state
+-   `Conversation` - Full conversation with turns + metadata
+-   `ChatTurn` - Single exchange within conversation
+-   `StateTracker` - Incremental processing state (v2 schema)
 
 ### Key Constants
 
--   `DEFAULT_MAX_CONTEXTS = 24`
--   `DEFAULT_CONTEXTS_PER_RUN = 8`
--   `DEFAULT_MIN_SCORE = 1.2`
+-   `DEFAULT_MAX_CONTEXTS = 24` - conversations per run
+-   `DEFAULT_CONTEXTS_PER_RUN = 8` - batch size
+-   `DEFAULT_MIN_SCORE = 1.2` - aggregate score threshold
 -   `DEFAULT_SIMILARITY_THRESHOLD = 0.82`
+-   `--conversation-max-turns = 10`
+-   `--conversation-max-chars = 8000`
 
 ## Questions to Ask When Working on This Project
 
@@ -741,12 +815,17 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 
 ------------------------------------------------------------------------
 
-**Last updated**: 2025-12-05
+**Last updated**: 2025-12-06
 
-**Project status**: Production-ready MVP with extensive roadmap for
-enhancements
+**Project status**: Production-ready with conversation-level processing,
+semantic deduplication, two-stage pipeline, and interactive review UI.
 
-**Current version**: Single-file Python script (\~1200 lines)
+**Current version**: Modular Python package with CLI entrypoint
+
+**Recent additions**:
+-   Conversation-level processing (LLM sees full learning journey)
+-   State schema v2 with automatic migration
+-   Topic-boundary splitting for long conversations
 
 **Future vision**: Intelligent, adaptive learning companion with plugin
-architecture, semantic deduplication, and active learning capabilities.
+architecture and active learning capabilities.

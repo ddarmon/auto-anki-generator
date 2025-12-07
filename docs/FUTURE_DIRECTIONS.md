@@ -6,14 +6,19 @@ organized by impact area and include implementation considerations.
 
 ## Executive Summary
 
-The current system works well for basic card generation from chat
-transcripts, but has significant opportunities for improvement in:
+The system is now production-ready with major features implemented:
 
--   **Performance**: Sequential processing and O(n) deduplication are
-    slow
--   **Intelligence**: Heuristic scoring misses nuanced quality signals
--   **User Experience**: Batch-only CLI with limited feedback
--   **Integration**: Manual workflow with no direct Anki connection
+### ✅ Completed
+-   **Semantic deduplication**: FAISS + SentenceTransformers with caching
+-   **Interactive review UI**: Shiny web app with keyboard shortcuts
+-   **AnkiConnect integration**: Direct import to Anki
+-   **Two-stage LLM pipeline**: Fast filter + slow generation
+-   **Conversation-level processing**: LLM sees full learning journey
+
+### 🚧 Remaining Opportunities
+-   **Performance**: Sequential processing (parallel processing not yet implemented)
+-   **Active learning**: No feedback loop to improve quality over time
+-   **Plugin architecture**: Not yet extensible for custom scorers/parsers
 
 ## Performance & Scalability
 
@@ -47,20 +52,18 @@ with Pool(processes=8) as pool:
     )
 ```
 
-### 2. Semantic Deduplication with Embeddings
+### 2. Semantic Deduplication with Embeddings ✅ DONE
 
-**Current limitation**: String similarity (`SequenceMatcher`) misses
-semantically identical content phrased differently
+**Status**: Fully implemented with FAISS IndexFlatIP and persistent caching.
 
-**Status**: Initial implementation available via
-`--dedup-method semantic` or `--dedup-method hybrid`, using
-SentenceTransformers embeddings over existing cards. See
-`auto_anki_agent.py:SemanticCardIndex`.
+**What's implemented**:
+-   `SemanticCardIndex` class in `auto_anki/dedup.py`
+-   FAISS vector index for fast similarity search
+-   Persistent cache in `.deck_cache/embeddings/` (auto-invalidated when decks change)
+-   Hybrid mode combining string + semantic deduplication
+-   CLI: `--dedup-method semantic|hybrid`, `--semantic-similarity-threshold`
 
-**Next steps**:
-
--   Cache embeddings across runs for large decks
--   Explore faster vector indices (e.g., FAISS/ChromaDB)
+**Potential enhancements**:
 -   Use embeddings for novelty scoring (underrepresented topics)
 
 **Impact**: Better duplicate detection, especially for paraphrased
@@ -130,46 +133,36 @@ CREATE INDEX idx_contexts_file ON seen_contexts(file_path);
 
 ## Intelligence & Card Quality
 
-### 4. Two-Stage LLM Pipeline
+### 4. Two-Stage LLM Pipeline ✅ DONE
 
-**Current inefficiency**: Sending all contexts to expensive model
-(GPT-5/Opus)
+**Status**: Fully implemented and enabled by default.
 
-**Proposal**:
-
--   **Stage 1**: Fast model (Haiku/GPT-4o-mini) pre-filters contexts
-    -   Quick yes/no on "contains learning-worthy content"
-    -   Extract 2-3 candidate concepts per context
-    -   Cost: \~\$0.001 per context
--   **Stage 2**: Slow model only for high-value contexts
+**What's implemented**:
+-   **Stage 1**: Fast filter using `gpt-5.1` with `model_reasoning_effort=low`
+    -   Filters conversations to keep only promising candidates
+    -   CLI: `--codex-model-stage1`
+-   **Stage 2**: Card generation using `gpt-5.1` with `model_reasoning_effort=high`
     -   Full card generation with quality prompts
-    -   Cost: \~\$0.05 per context
+    -   CLI: `--codex-model-stage2`
+-   CLI flags: `--two-stage` (default), `--single-stage` to disable
 
-**Impact**: 70% cost reduction, 3x faster throughput
+**Impact**: Significant cost reduction by filtering before expensive generation
 
-**ROI calculation**:
+### 5. Context Clustering & Topic Modeling (Partially Addressed)
 
--   Current: 100 contexts × \$0.05 = \$5.00
--   Proposed: (100 × \$0.001) + (30 × \$0.05) = \$1.60
--   Savings: 68%
+**Status**: Conversation-level processing provides natural topic grouping.
 
-### 5. Context Clustering & Topic Modeling
+**What's implemented**:
+-   Full conversations sent to LLM (related turns grouped together)
+-   `key_topics` extracted from each conversation
+-   Topic-boundary splitting for long conversations
+-   LLM can create coherent card sets with `depends_on` links
 
-**Current limitation**: Contexts processed independently, missing
-thematic connections
-
-**Proposal**:
-
--   Cluster contexts by topic before sending to codex
--   Use BERTopic or simple k-means on embeddings
--   Group related contexts in same prompt (better coherence)
--   Generate "card sets" with internal dependencies
-
-**Benefits**:
-
--   Better card coherence within topics
--   Identify coverage gaps by topic
--   More efficient prompting (shared context)
+**Remaining opportunities**:
+-   Cross-conversation topic clustering using embeddings
+-   BERTopic for automatic topic discovery
+-   Topic distribution visualization
+-   Coverage gap detection by topic
 
 **Visualization idea**: Topic distribution heatmap showing deck coverage
 vs incoming contexts
@@ -338,55 +331,24 @@ class CardValidator:
 
 ## User Experience
 
-### 11. Interactive Review Mode
+### 11. Interactive Review Mode ✅ DONE
 
-**Current limitation**: Batch-only workflow, no preview before import
+**Status**: Fully implemented as Shiny web app (`anki_review_ui.py`).
 
-**Proposal**: Terminal UI for card review
+**What's implemented**:
+-   Card-by-card review with accept/reject/edit/skip
+-   Keyboard shortcuts (A/R/E/S, arrow keys)
+-   Source context display (now with conversation info)
+-   Progress tracking and statistics
+-   Filtering by deck and confidence
+-   Bulk operations (accept all high-confidence)
+-   Rejection reason tracking
+-   Codex-powered card updates
+-   Export accepted cards to JSON
 
-``` python
-# Using rich or prompt_toolkit
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
+**Launch**: `./launch_ui.sh` or `shiny run anki_review_ui.py`
 
-class InteractiveReviewer:
-    def review_cards(self, proposed_cards: List[Dict]):
-        for idx, card in enumerate(proposed_cards, 1):
-            console.clear()
-            self.display_card(card, idx, len(proposed_cards))
-
-            action = self.prompt_action()
-            if action == 'accept':
-                self.accepted.append(card)
-            elif action == 'reject':
-                reason = self.prompt_rejection_reason()
-                self.rejected.append((card, reason))
-            elif action == 'edit':
-                card = self.edit_card(card)
-                self.accepted.append(card)
-            elif action == 'skip':
-                self.deferred.append(card)
-
-    def display_card(self, card, idx, total):
-        panel = Panel(
-            f"[bold]Front:[/bold]\n{card['front']}\n\n"
-            f"[bold]Back:[/bold]\n{card['back']}\n\n"
-            f"[dim]Confidence: {card['confidence']} | "
-            f"Deck: {card['deck']}[/dim]",
-            title=f"Card {idx}/{total}",
-            border_style="green"
-        )
-        console.print(panel)
-```
-
-**Keybindings**:
-
--   `a` - accept
--   `r` - reject
--   `e` - edit
--   `s` - skip/defer
--   `q` - quit and save progress
+See `UI_README.md` for full documentation.
 
 ### 12. Rich Previews & Context
 
@@ -479,51 +441,22 @@ def send_daily_digest():
 
 ## Integration & Automation
 
-### 15. Direct Anki Integration via AnkiConnect
+### 15. Direct Anki Integration via AnkiConnect ✅ DONE
 
-**Eliminate manual import friction**:
+**Status**: Fully implemented in `anki_connect.py` with UI integration.
 
-``` python
-import requests
+**What's implemented**:
+-   `AnkiConnectClient` class with full API support
+-   Real-time connection status indicator in UI
+-   Import current card with one click
+-   Batch import all accepted cards
+-   Duplicate detection (configurable)
+-   Auto-create missing decks
+-   30-60x faster than manual import
 
-class AnkiConnector:
-    def __init__(self, url='http://localhost:8765'):
-        self.url = url
+**Setup**: Install AnkiConnect plugin (code: 2055492159), start Anki, launch UI.
 
-    def add_note(self, deck: str, front: str, back: str, tags: List[str]):
-        response = requests.post(self.url, json={
-            'action': 'addNote',
-            'version': 6,
-            'params': {
-                'note': {
-                    'deckName': deck,
-                    'modelName': 'Basic',
-                    'fields': {
-                        'Front': front,
-                        'Back': back
-                    },
-                    'tags': tags
-                }
-            }
-        })
-        return response.json()
-
-    def get_deck_stats(self, deck: str):
-        # Query existing cards for better deduplication
-        response = requests.post(self.url, json={
-            'action': 'findNotes',
-            'version': 6,
-            'params': {'query': f'deck:{deck}'}
-        })
-        return response.json()
-```
-
-**Benefits**:
-
--   One-click import after review
--   Sync deck metadata automatically
--   Support for media files (images, audio)
--   Real-time deck stats for novelty scoring
+See `ANKICONNECT_GUIDE.md` for full documentation.
 
 ### 16. Multi-Source Support
 
@@ -1552,11 +1485,11 @@ for chunk in chunks:
 
 **Reduce friction**
 
-1.  [ ] AnkiConnect integration
+1.  [x] AnkiConnect integration ✅ DONE
 2.  [ ] SQLite state backend
 3.  [ ] Multi-source support (PDFs, YouTube)
 4.  [ ] Watch mode for continuous processing
-5.  [ ] Web dashboard for progress tracking
+5.  [x] Web dashboard for progress tracking ✅ DONE (Shiny UI)
 
 ### Phase 4: Advanced Features (4-6 weeks)
 
@@ -1564,7 +1497,7 @@ for chunk in chunks:
 
 1.  [ ] Active learning from feedback
 2.  [ ] Concept graph visualization
-3.  [ ] Context clustering & topic modeling
+3.  [x] Context clustering & topic modeling ✅ PARTIAL (conversation-level grouping)
 4.  [ ] Multi-modal cards (images, audio)
 5.  [ ] Plugin architecture
 
@@ -1587,6 +1520,9 @@ for chunk in chunks:
 
 2.  **Semantic chunking**: What's the best way to segment long
     conversations into coherent learning units?
+    - ✅ ADDRESSED: Implemented `split_conversation_by_topic()` using term overlap
+      and explicit markers. Configurable via `--conversation-max-turns` and
+      `--conversation-max-chars`.
 
 3.  **Card difficulty prediction**: Can we accurately predict SuperMemo
     ease factors from content analysis?
@@ -1656,21 +1592,23 @@ for chunk in chunks:
 
 ## Conclusion
 
-The Auto Anki Agent has strong fundamentals but significant room for
-growth. The highest-leverage improvements are:
+The Auto Anki Agent has evolved from a batch processor into a production-ready
+intelligent learning companion. The highest-leverage improvements are now complete:
 
-1.  ~~**Semantic deduplication**~~ ✅ **INITIAL IMPLEMENTATION COMPLETE** - Biggest quality improvement so far
-2.  **Interactive review** - Biggest UX improvement
-3.  **Two-stage pipeline** - Biggest cost/speed improvement
-4.  **AnkiConnect** - Biggest friction reduction
-5.  **Active learning** - Biggest long-term potential
+1.  ~~**Semantic deduplication**~~ ✅ **DONE** - FAISS + embeddings with caching
+2.  ~~**Interactive review**~~ ✅ **DONE** - Shiny web app with keyboard shortcuts
+3.  ~~**Two-stage pipeline**~~ ✅ **DONE** - Fast filter + slow generation
+4.  ~~**AnkiConnect**~~ ✅ **DONE** - One-click import, 30-60x faster
+5.  ~~**Conversation-level processing**~~ ✅ **DONE** - LLM sees full learning journey
+6.  **Active learning** - Biggest remaining potential
 
-Implementing these five features would transform the tool from a useful
-batch processor into an intelligent, adaptive learning companion.
+**Remaining opportunities:**
+-   Plugin architecture for custom scorers/parsers
+-   Multi-source support (PDFs, YouTube, etc.)
+-   Active learning from user feedback
+-   SQLite state backend for scale
 
-The plugin architecture and configuration system enable community
-contributions and customization without bloating the core. The metrics
-and observability infrastructure ensure continuous improvement based on
+The metrics and observability infrastructure ensure continuous improvement based on
 data.
 
 Long-term vision: An autonomous agent that discovers your knowledge
