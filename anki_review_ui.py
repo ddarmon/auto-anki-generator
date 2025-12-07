@@ -52,6 +52,7 @@ class CardReviewSession:
         self.decisions = {}  # card_index -> {action, reason, edited_card}
         self.current_index = 0
         self.filtered_indices = list(range(len(self.cards)))  # Active card indices
+        self._load_saved_session()  # Restore previous session state if exists
 
     def _load_cards(self) -> List[Dict]:
         """Load proposed cards from run directory."""
@@ -208,7 +209,9 @@ class CardReviewSession:
         for idx, card in enumerate(self.cards):
             decision = self.decisions.get(idx)
             if decision and decision['action'] in ['accept', 'edit']:
-                export_card = decision.get('edited_card', card)
+                # Use edited card if available, otherwise use original
+                edited = decision.get('edited_card')
+                export_card = edited if edited else card
                 accepted.append(export_card)
 
         output_path.write_text(json.dumps(accepted, indent=2))
@@ -232,6 +235,31 @@ class CardReviewSession:
 
         output_path.write_text(json.dumps(feedback, indent=2))
         return len(feedback)
+
+    def _load_saved_session(self):
+        """Restore previous session state if exists."""
+        session_file = self.run_dir / ".review_session.json"
+        if session_file.exists():
+            try:
+                data = json.loads(session_file.read_text())
+                self.decisions = {int(k): v for k, v in data.get("decisions", {}).items()}
+                self.current_index = data.get("current_index", 0)
+                saved_filters = data.get("filtered_indices")
+                if saved_filters:
+                    self.filtered_indices = saved_filters
+            except (json.JSONDecodeError, KeyError):
+                pass  # Ignore corrupted session file
+
+    def save_session(self):
+        """Persist current session state to disk after each action."""
+        session_file = self.run_dir / ".review_session.json"
+        data = {
+            "timestamp": datetime.now().isoformat(),
+            "current_index": self.current_index,
+            "decisions": {str(k): v for k, v in self.decisions.items()},
+            "filtered_indices": self.filtered_indices,
+        }
+        session_file.write_text(json.dumps(data, indent=2))
 
 
 def find_recent_runs(base_dir: Path = Path("auto_anki_runs"), limit: int = 10) -> List[Path]:
@@ -373,6 +401,9 @@ app_ui = ui.page_fluid(
                     {"class": "stats-card"},
                     ui.h4(ui.output_text("card_counter")),
 
+                    # Decision Status
+                    ui.output_ui("decision_status"),
+
                     # Deck and Tags
                     ui.div(
                         ui.strong("Deck: "),
@@ -472,18 +503,8 @@ app_ui = ui.page_fluid(
                     )
                 ),
 
-                # Edit Panel (conditional)
-                ui.panel_conditional(
-                    "input.btn_edit % 2 == 1 || input.btn_codex_update > 0",
-                    ui.div(
-                        {"class": "stats-card", "style": "margin-top: 15px;"},
-                        ui.h4("Edit Card"),
-                        ui.input_text_area("edit_front", "Front:", rows=3, width="100%"),
-                        ui.input_text_area("edit_back", "Back:", rows=5, width="100%"),
-                        ui.input_text("edit_tags", "Tags (comma-separated):", width="100%"),
-                        ui.input_action_button("btn_save_edit", "Save Changes", class_="btn-primary"),
-                    )
-                ),
+                # Edit Panel (rendered conditionally from server)
+                ui.output_ui("edit_panel"),
 
                 ui.div(
                     {"class": "stats-card", "style": "margin-top: 15px;"},
@@ -714,8 +735,19 @@ def server(input: Inputs, output: Outputs, session: Session):
     # Reactive values
     session_state = reactive.Value(None)
     current_card_index = reactive.Value(0)
-    force_update = reactive.Value(0)
+    edit_mode_active = reactive.Value(False)
     codex_msg = reactive.Value("")
+    stats_trigger = reactive.Value(0)  # Trigger to force stats UI update
+    pending_edit = reactive.Value(None)  # Stores {front, back, tags} from Codex or None
+
+    def clear_card_state():
+        """Reset card-specific UI state when changing cards."""
+        codex_msg.set("")
+        edit_mode_active.set(False)  # This will hide edit panel (inputs are dynamically created)
+        pending_edit.set(None)  # Clear any pending Codex suggestions
+        ui.update_select("reject_reason", selected="")
+        ui.update_text("reject_reason_other", value="")
+        ui.update_text_area("codex_instructions", value="")
 
     # AnkiConnect client (initialized once)
     anki_client = AnkiConnectClient() if ANKI_CONNECT_AVAILABLE else None
@@ -737,11 +769,13 @@ def server(input: Inputs, output: Outputs, session: Session):
             run_path = Path(input.run_select())
             if run_path.exists():
                 session_state.set(CardReviewSession(run_path))
-                current_card_index.set(0)
 
-                # Update deck filter options
+                # Restore current_index from saved session (or start at 0)
                 session = session_state.get()
                 if session:
+                    current_card_index.set(session.current_index)
+
+                    # Update deck filter options
                     decks = list(set(card.get('deck', 'Unknown') for card in session.cards))
                     deck_choices = {"all": "All Decks"}
                     deck_choices.update({d: d for d in sorted(decks)})
@@ -762,12 +796,17 @@ def server(input: Inputs, output: Outputs, session: Session):
             )
         return ""
 
-    # Get current card
+    # Get current card (returns edited version if available)
     def get_current_card():
         session = session_state.get()
         if not session:
             return None
-        return session.get_card(current_card_index.get())
+        idx = current_card_index.get()
+        # Check if there's an edited version
+        decision = session.decisions.get(idx)
+        if decision and decision.get('action') == 'edit' and decision.get('edited_card'):
+            return decision['edited_card']
+        return session.get_card(idx)
 
     # Progress bar
     @output
@@ -805,16 +844,66 @@ def server(input: Inputs, output: Outputs, session: Session):
         idx = current_card_index.get()
         return f"Card {idx + 1} of {len(session.cards)}"
 
-    # Card display
+    # Decision status indicator
+    @output
+    @render.ui
+    def decision_status():
+        stats_trigger.get()  # Re-render when decisions change
+        session = session_state.get()
+        if not session:
+            return ui.div()
+
+        idx = current_card_index.get()
+        decision = session.decisions.get(idx)
+
+        if not decision:
+            return ui.div(
+                {"style": "padding: 8px; margin: 10px 0; background-color: #f0f0f0; border-radius: 4px; text-align: center;"},
+                ui.span({"style": "color: #666;"}, "⏳ Not yet reviewed")
+            )
+
+        action = decision.get('action', '')
+        reason = decision.get('reason', '')
+
+        if action == 'accept':
+            return ui.div(
+                {"style": "padding: 8px; margin: 10px 0; background-color: #d4edda; border-radius: 4px; border-left: 4px solid #28a745; text-align: center;"},
+                ui.span({"style": "color: #155724; font-weight: bold;"}, "✓ ACCEPTED"),
+                ui.span({"style": "color: #155724; margin-left: 10px;"}, f"({reason})" if reason else "")
+            )
+        elif action == 'reject':
+            reason_text = f" - {reason}" if reason else ""
+            return ui.div(
+                {"style": "padding: 8px; margin: 10px 0; background-color: #f8d7da; border-radius: 4px; border-left: 4px solid #dc3545; text-align: center;"},
+                ui.span({"style": "color: #721c24; font-weight: bold;"}, "✗ REJECTED"),
+                ui.span({"style": "color: #721c24; margin-left: 10px;"}, reason_text)
+            )
+        elif action == 'edit':
+            return ui.div(
+                {"style": "padding: 8px; margin: 10px 0; background-color: #d4edda; border-radius: 4px; border-left: 4px solid #28a745; text-align: center;"},
+                ui.span({"style": "color: #155724; font-weight: bold;"}, "✓ ACCEPTED"),
+                ui.span({"style": "color: #155724; margin-left: 5px;"}, "(edited)")
+            )
+        elif action == 'skip':
+            return ui.div(
+                {"style": "padding: 8px; margin: 10px 0; background-color: #e2e3e5; border-radius: 4px; border-left: 4px solid #6c757d; text-align: center;"},
+                ui.span({"style": "color: #383d41; font-weight: bold;"}, "⊙ SKIPPED")
+            )
+
+        return ui.div()
+
+    # Card display (depend on stats_trigger to update after edits)
     @output
     @render.text
     def card_deck():
+        stats_trigger.get()  # Re-render when decisions change
         card = get_current_card()
         return card.get('deck', 'Unknown') if card else ""
 
     @output
     @render.text
     def card_tags():
+        stats_trigger.get()  # Re-render when decisions change
         card = get_current_card()
         if card and card.get('tags'):
             return ", ".join(card['tags'])
@@ -823,6 +912,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     @output
     @render.text
     def card_confidence():
+        stats_trigger.get()  # Re-render when decisions change
         card = get_current_card()
         if card:
             conf = card.get('confidence', 0)
@@ -832,18 +922,21 @@ def server(input: Inputs, output: Outputs, session: Session):
     @output
     @render.text
     def card_front():
+        stats_trigger.get()  # Re-render when decisions change
         card = get_current_card()
         return card.get('front', '') if card else ""
 
     @output
     @render.text
     def card_back():
+        stats_trigger.get()  # Re-render when decisions change
         card = get_current_card()
         return card.get('back', '') if card else ""
 
     @output
     @render.text
     def card_notes():
+        stats_trigger.get()  # Re-render when decisions change
         card = get_current_card()
         return card.get('notes', 'No notes') if card else ""
 
@@ -852,6 +945,39 @@ def server(input: Inputs, output: Outputs, session: Session):
     @render.text
     def codex_message():
         return codex_msg.get()
+
+    # Edit panel (conditionally rendered)
+    @output
+    @render.ui
+    def edit_panel():
+        if not edit_mode_active.get():
+            return ui.div()  # Empty div when not in edit mode
+
+        card = get_current_card()
+        pending = pending_edit.get()
+
+        # Use pending edit values (from Codex) if available, otherwise use card values
+        if pending:
+            front_val = pending.get('front', card.get('front', '') if card else '')
+            back_val = pending.get('back', card.get('back', '') if card else '')
+            tags_val = pending.get('tags', [])
+            if isinstance(tags_val, list):
+                tags_str = ", ".join(tags_val)
+            else:
+                tags_str = str(tags_val)
+        else:
+            front_val = card.get('front', '') if card else ''
+            back_val = card.get('back', '') if card else ''
+            tags_str = ", ".join(card.get('tags', [])) if card else ''
+
+        return ui.div(
+            {"class": "stats-card", "style": "margin-top: 15px;"},
+            ui.h4("Edit Card"),
+            ui.input_text_area("edit_front", "Front:", value=front_val, rows=3, width="100%"),
+            ui.input_text_area("edit_back", "Back:", value=back_val, rows=5, width="100%"),
+            ui.input_text("edit_tags", "Tags (comma-separated):", value=tags_str, width="100%"),
+            ui.input_action_button("btn_save_edit", "Save Changes", class_="btn-primary"),
+        )
 
     # Context display
     @output
@@ -972,6 +1098,8 @@ def server(input: Inputs, output: Outputs, session: Session):
     @output
     @render.ui
     def stats_summary():
+        # Depend on stats_trigger to force re-render when decisions change
+        stats_trigger.get()
         session = session_state.get()
         if not session:
             return ui.p("No session loaded")
@@ -986,6 +1114,8 @@ def server(input: Inputs, output: Outputs, session: Session):
     @output
     @render.ui
     def stats_actions():
+        # Depend on stats_trigger to force re-render when decisions change
+        stats_trigger.get()
         session = session_state.get()
         if not session:
             return ""
@@ -1009,7 +1139,10 @@ def server(input: Inputs, output: Outputs, session: Session):
             # Move to next card
             if idx < len(session.cards) - 1:
                 current_card_index.set(idx + 1)
-            force_update.set(force_update.get() + 1)
+                session.current_index = idx + 1
+                clear_card_state()
+            session.save_session()
+            stats_trigger.set(stats_trigger.get() + 1)  # Trigger stats update
 
     @reactive.Effect
     @reactive.event(input.btn_reject)
@@ -1025,7 +1158,10 @@ def server(input: Inputs, output: Outputs, session: Session):
             # Move to next card
             if idx < len(session.cards) - 1:
                 current_card_index.set(idx + 1)
-            force_update.set(force_update.get() + 1)
+                session.current_index = idx + 1
+                clear_card_state()
+            session.save_session()
+            stats_trigger.set(stats_trigger.get() + 1)  # Trigger stats update
 
     @reactive.Effect
     @reactive.event(input.btn_skip)
@@ -1037,7 +1173,10 @@ def server(input: Inputs, output: Outputs, session: Session):
             # Move to next card
             if idx < len(session.cards) - 1:
                 current_card_index.set(idx + 1)
-            force_update.set(force_update.get() + 1)
+                session.current_index = idx + 1
+                clear_card_state()
+            session.save_session()
+            stats_trigger.set(stats_trigger.get() + 1)  # Trigger stats update
 
     @reactive.Effect
     @reactive.event(input.btn_next)
@@ -1047,13 +1186,21 @@ def server(input: Inputs, output: Outputs, session: Session):
             idx = current_card_index.get()
             if idx < len(session.cards) - 1:
                 current_card_index.set(idx + 1)
+                session.current_index = idx + 1
+                clear_card_state()
+                session.save_session()
 
     @reactive.Effect
     @reactive.event(input.btn_prev)
     def _():
+        session = session_state.get()
         idx = current_card_index.get()
         if idx > 0:
             current_card_index.set(idx - 1)
+            clear_card_state()
+            if session:
+                session.current_index = idx - 1
+                session.save_session()
 
     @reactive.Effect
     @reactive.event(input.btn_jump)
@@ -1063,6 +1210,9 @@ def server(input: Inputs, output: Outputs, session: Session):
             target = input.jump_to() - 1  # Convert to 0-indexed
             if 0 <= target < len(session.cards):
                 current_card_index.set(target)
+                clear_card_state()
+                session.current_index = target
+                session.save_session()
 
     # Codex-powered update of current card
     @reactive.Effect
@@ -1126,9 +1276,13 @@ def server(input: Inputs, output: Outputs, session: Session):
             else:
                 tags_list = card.get("tags", []) or []
 
-            ui.update_text_area("edit_front", value=new_front)
-            ui.update_text_area("edit_back", value=new_back)
-            ui.update_text("edit_tags", value=", ".join(tags_list))
+            # Store pending edit and show edit panel
+            pending_edit.set({
+                'front': new_front,
+                'back': new_back,
+                'tags': tags_list,
+            })
+            edit_mode_active.set(True)  # Show edit panel with Codex suggestions
 
             codex_msg.set("✓ Codex suggestion applied. Review and click 'Save Changes' to accept.")
 
@@ -1141,11 +1295,8 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.Effect
     @reactive.event(input.btn_edit)
     def _():
-        card = get_current_card()
-        if card:
-            ui.update_text_area("edit_front", value=card.get('front', ''))
-            ui.update_text_area("edit_back", value=card.get('back', ''))
-            ui.update_text("edit_tags", value=", ".join(card.get('tags', [])))
+        pending_edit.set(None)  # Clear any Codex suggestions, use original card values
+        edit_mode_active.set(True)  # Show the edit panel
 
     @reactive.Effect
     @reactive.event(input.btn_save_edit)
@@ -1162,10 +1313,16 @@ def server(input: Inputs, output: Outputs, session: Session):
 
             session.record_decision(idx, 'edit', edited_card=edited_card)
 
-            # Move to next card
+            # Close edit panel and move to next card
+            pending_edit.set(None)  # Clear pending edit
             if idx < len(session.cards) - 1:
                 current_card_index.set(idx + 1)
-            force_update.set(force_update.get() + 1)
+                session.current_index = idx + 1
+                clear_card_state()
+            else:
+                edit_mode_active.set(False)  # Just close edit panel if at last card
+            session.save_session()
+            stats_trigger.set(stats_trigger.get() + 1)  # Trigger stats update
 
     # Filter functionality
     filter_msg = reactive.Value("")
@@ -1187,10 +1344,11 @@ def server(input: Inputs, output: Outputs, session: Session):
             # Reset to first filtered card
             if session.filtered_indices:
                 current_card_index.set(session.filtered_indices[0])
+                session.current_index = session.filtered_indices[0]
                 filter_msg.set(f"✓ Showing {len(session.filtered_indices)} of {len(session.cards)} cards")
             else:
                 filter_msg.set("⚠ No cards match filters")
-            force_update.set(force_update.get() + 1)
+            session.save_session()
 
     # Bulk actions
     bulk_msg = reactive.Value("")
@@ -1208,7 +1366,8 @@ def server(input: Inputs, output: Outputs, session: Session):
             threshold = input.bulk_confidence_threshold()
             count = session.bulk_accept_high_confidence(threshold=threshold)
             bulk_msg.set(f"✓ Auto-accepted {count} cards (confidence ≥ {threshold:.0%})")
-            force_update.set(force_update.get() + 1)
+            session.save_session()
+            stats_trigger.set(stats_trigger.get() + 1)  # Trigger stats update
 
     # Export functionality
     export_msg = reactive.Value("")
@@ -1320,7 +1479,8 @@ def server(input: Inputs, output: Outputs, session: Session):
                 session = session_state.get()
                 if session and idx not in session.decisions:
                     session.record_decision(idx, 'accept', reason="Imported to Anki")
-                force_update.set(force_update.get() + 1)
+                    session.save_session()
+                    stats_trigger.set(stats_trigger.get() + 1)  # Trigger stats update
             else:
                 anki_msg.set("⚠ Card already exists in Anki (duplicate)")
 
@@ -1349,8 +1509,9 @@ def server(input: Inputs, output: Outputs, session: Session):
         for idx, card in enumerate(session.cards):
             decision = session.decisions.get(idx)
             if decision and decision['action'] in ['accept', 'edit']:
-                # Use edited card if available
-                card_to_import = decision.get('edited_card', card)
+                # Use edited card if available, otherwise use original
+                edited = decision.get('edited_card')
+                card_to_import = edited if edited else card
                 accepted_cards.append(card_to_import)
 
         if not accepted_cards:
