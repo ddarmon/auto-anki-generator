@@ -16,6 +16,7 @@ Or with uv:
 """
 
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -262,14 +263,88 @@ class CardReviewSession:
         session_file.write_text(json.dumps(data, indent=2))
 
 
-def find_recent_runs(base_dir: Path = Path("auto_anki_runs"), limit: int = 10) -> List[Path]:
-    """Find recent run directories."""
+def _check_run_complete(run_dir: Path) -> bool:
+    """Check if a run is 100% reviewed by reading session file.
+
+    A run is complete when all cards have decisions recorded.
+    """
+    session_file = run_dir / ".review_session.json"
+    cards_file = run_dir / "all_proposed_cards.json"
+
+    if not session_file.exists() or not cards_file.exists():
+        return False
+
+    try:
+        session_data = json.loads(session_file.read_text())
+        cards_data = json.loads(cards_file.read_text())
+
+        total_cards = len(cards_data)
+        decisions = session_data.get("decisions", {})
+
+        return len(decisions) >= total_cards and total_cards > 0
+    except (json.JSONDecodeError, KeyError):
+        return False
+
+
+def find_recent_runs(base_dir: Path = Path("auto_anki_runs"), limit: int = 10) -> List[tuple]:
+    """Find recent run directories with completion status.
+
+    Returns list of (run_path, is_complete) tuples.
+    """
     if not base_dir.exists():
         return []
 
-    run_dirs = [d for d in base_dir.iterdir() if d.is_dir() and d.name.startswith('run-')]
+    run_dirs = [d for d in base_dir.iterdir()
+                if d.is_dir() and d.name.startswith('run-') and d.name != 'archived']
     run_dirs.sort(reverse=True)
-    return run_dirs[:limit]
+
+    results = []
+    for run_dir in run_dirs[:limit]:
+        is_complete = _check_run_complete(run_dir)
+        results.append((run_dir, is_complete))
+
+    return results
+
+
+def archive_run(run_dir: Path, archive_base: Path = None) -> Path:
+    """Move a completed run to the archive folder.
+
+    Args:
+        run_dir: Path to the run directory to archive
+        archive_base: Base path for archive folder. Defaults to run_dir.parent / "archived"
+
+    Returns:
+        Path to the archived run directory
+    """
+    if archive_base is None:
+        archive_base = run_dir.parent / "archived"
+
+    archive_base.mkdir(exist_ok=True)
+    dest = archive_base / run_dir.name
+
+    shutil.move(str(run_dir), str(dest))
+    return dest
+
+
+def find_archived_runs(base_dir: Path = Path("auto_anki_runs"), limit: int = 20) -> List[tuple]:
+    """Find archived run directories with completion status.
+
+    Returns list of (run_path, is_complete) tuples from the archived folder.
+    """
+    archived_dir = base_dir / "archived"
+    if not archived_dir.exists():
+        return []
+
+    run_dirs = [d for d in archived_dir.iterdir()
+                if d.is_dir() and d.name.startswith('run-')]
+    run_dirs.sort(reverse=True)
+
+    results = []
+    for run_dir in run_dirs[:limit]:
+        is_complete = _check_run_complete(run_dir)
+        results.append((run_dir, is_complete))
+
+    return results
 
 
 # ============================================================================
@@ -616,6 +691,9 @@ app_ui = ui.page_fluid(
                     ui.input_action_button("btn_export", "Export Accepted Cards (JSON)", class_="btn-success", width="100%"),
                     ui.input_action_button("btn_export_feedback", "Export Feedback Data", class_="btn-info", width="100%", style="margin-top: 10px;"),
                     ui.output_text("export_message", inline=True),
+                    ui.hr(),
+                    ui.input_action_button("btn_archive_run", "Archive This Run", class_="btn-outline-secondary", width="100%"),
+                    ui.output_text("archive_message", inline=True),
                 ),
 
                 ui.div(
@@ -623,6 +701,19 @@ app_ui = ui.page_fluid(
                     ui.h4("Navigation"),
                     ui.input_numeric("jump_to", "Jump to card:", value=1, min=1),
                     ui.input_action_button("btn_jump", "Go", class_="btn-primary", width="100%"),
+                ),
+
+                ui.div(
+                    {"class": "stats-card"},
+                    ui.h4("Archived Runs"),
+                    ui.input_select(
+                        "archived_run_select",
+                        "View archived run:",
+                        choices={"": "-- Select archived run --"},
+                        width="100%"
+                    ),
+                    ui.input_action_button("btn_load_archived", "Load Archived Run", class_="btn-outline-info", width="100%"),
+                    ui.input_action_button("btn_unarchive", "Unarchive Selected", class_="btn-outline-warning", width="100%", style="margin-top: 10px;"),
                 ),
             )
         )
@@ -752,14 +843,30 @@ def server(input: Inputs, output: Outputs, session: Session):
     # AnkiConnect client (initialized once)
     anki_client = AnkiConnectClient() if ANKI_CONNECT_AVAILABLE else None
 
-    # Initialize run options
+    # Initialize run options (active and archived)
     @reactive.Effect
     def _():
+        # Populate active runs dropdown
         runs = find_recent_runs()
-        choices = {str(r): r.name for r in runs}
+        choices = {}
+        for run_path, is_complete in runs:
+            label = run_path.name
+            if is_complete:
+                label += " [DONE]"
+            choices[str(run_path)] = label
         if not choices:
             choices = {"": "No runs found"}
         ui.update_select("run_select", choices=choices)
+
+        # Populate archived runs dropdown
+        archived = find_archived_runs()
+        archived_choices = {"": "-- Select archived run --"}
+        for run_path, is_complete in archived:
+            label = run_path.name
+            if is_complete:
+                label += " [DONE]"
+            archived_choices[str(run_path)] = label
+        ui.update_select("archived_run_select", choices=archived_choices)
 
     # Load session when run is selected
     @reactive.Effect
@@ -1404,6 +1511,119 @@ def server(input: Inputs, output: Outputs, session: Session):
             export_msg.set(f"✓ Exported {count} feedback records to {output_file.name}")
         else:
             export_msg.set("✗ No session loaded")
+
+    # Archive functionality
+    archive_msg = reactive.Value("")
+    run_list_trigger = reactive.Value(0)  # Trigger to refresh run dropdowns
+
+    @output
+    @render.text
+    def archive_message():
+        return archive_msg.get()
+
+    def refresh_run_lists():
+        """Refresh both active and archived run dropdowns."""
+        # Refresh active runs
+        runs = find_recent_runs()
+        choices = {}
+        for run_path, is_complete in runs:
+            label = run_path.name
+            if is_complete:
+                label += " [DONE]"
+            choices[str(run_path)] = label
+        if not choices:
+            choices = {"": "No runs found"}
+        ui.update_select("run_select", choices=choices)
+
+        # Refresh archived runs
+        archived = find_archived_runs()
+        archived_choices = {"": "-- Select archived run --"}
+        for run_path, is_complete in archived:
+            label = run_path.name
+            if is_complete:
+                label += " [DONE]"
+            archived_choices[str(run_path)] = label
+        ui.update_select("archived_run_select", choices=archived_choices)
+
+    @reactive.Effect
+    @reactive.event(input.btn_archive_run)
+    def _():
+        """Archive the current run."""
+        session = session_state.get()
+        if not session:
+            archive_msg.set("✗ No session loaded")
+            return
+
+        # Check if run is complete
+        stats = session.get_stats()
+        if stats['remaining'] > 0:
+            archive_msg.set(f"⚠ Run not complete ({stats['remaining']} cards remaining)")
+            return
+
+        try:
+            run_dir = session.run_dir
+            archived_path = archive_run(run_dir)
+            archive_msg.set(f"✓ Archived to {archived_path.name}")
+
+            # Clear current session and refresh lists
+            session_state.set(None)
+            current_card_index.set(0)
+            refresh_run_lists()
+            ui.update_select("run_select", selected="")
+
+        except Exception as e:
+            archive_msg.set(f"✗ Archive failed: {str(e)[:50]}")
+
+    @reactive.Effect
+    @reactive.event(input.btn_load_archived)
+    def _():
+        """Load an archived run for viewing."""
+        archived_path = input.archived_run_select()
+        if not archived_path:
+            archive_msg.set("⚠ Select an archived run first")
+            return
+
+        run_path = Path(archived_path)
+        if run_path.exists():
+            session_state.set(CardReviewSession(run_path))
+            session = session_state.get()
+            if session:
+                current_card_index.set(session.current_index)
+                # Update deck filter options
+                decks = list(set(card.get('deck', 'Unknown') for card in session.cards))
+                deck_choices = {"all": "All Decks"}
+                deck_choices.update({d: d for d in sorted(decks)})
+                ui.update_select("filter_deck", choices=deck_choices)
+                archive_msg.set(f"✓ Loaded archived run: {run_path.name}")
+        else:
+            archive_msg.set("✗ Archived run not found")
+
+    @reactive.Effect
+    @reactive.event(input.btn_unarchive)
+    def _():
+        """Move an archived run back to active runs."""
+        archived_path = input.archived_run_select()
+        if not archived_path:
+            archive_msg.set("⚠ Select an archived run first")
+            return
+
+        try:
+            run_path = Path(archived_path)
+            if not run_path.exists():
+                archive_msg.set("✗ Archived run not found")
+                return
+
+            # Move back to active runs folder
+            active_dir = run_path.parent.parent  # Go from archived/ to auto_anki_runs/
+            dest = active_dir / run_path.name
+            shutil.move(str(run_path), str(dest))
+
+            archive_msg.set(f"✓ Unarchived: {run_path.name}")
+            refresh_run_lists()
+            ui.update_select("archived_run_select", selected="")
+
+        except Exception as e:
+            archive_msg.set(f"✗ Unarchive failed: {str(e)[:50]}")
 
     # AnkiConnect functionality
     anki_msg = reactive.Value("")
