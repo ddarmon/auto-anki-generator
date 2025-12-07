@@ -374,7 +374,44 @@ shiny run anki_review_ui.py
 - [x] ~~Semantic deduplication with embeddings~~ ✅ **DONE!** (SentenceTransformers + FAISS vector cache)
 - [x] ~~Conversation-level processing~~ ✅ **DONE!** (LLM sees full learning journey)
 - [x] ~~Two-stage LLM pipeline~~ ✅ **DONE!** (Fast filter + slow generation)
+- [x] ~~Test suite~~ ✅ **DONE!** (97 tests covering core functions)
 - [ ] Tag taxonomy management
 - [ ] Multi-deck routing logic with ML
 - [ ] Topic distribution visualization
 - [ ] Active learning from user feedback
+
+## Development
+
+### Running Tests
+
+The project includes a pytest-based test suite covering core functions:
+
+```bash
+# Run all tests
+uv run pytest
+
+# Run with coverage report
+uv run pytest --cov=auto_anki --cov-report=term-missing
+
+# Run specific test file
+uv run pytest tests/test_scoring.py -v
+```
+
+**Test files:**
+
+| File | Tests |
+|------|-------|
+| `test_scoring.py` | `detect_signals`, `extract_key_terms`, `extract_key_points` |
+| `test_normalization.py` | `normalize_text`, `quick_similarity` |
+| `test_parsing.py` | `parse_chat_entries`, `extract_turns`, `parse_chat_metadata` |
+| `test_date_filter.py` | `DateRangeFilter` class |
+| `test_dedup.py` | `is_duplicate_context` |
+
+### Dev Dependencies
+
+Install test dependencies:
+
+```bash
+uv pip install pytest pytest-cov
+# or install from pyproject.toml dev-dependencies
+```

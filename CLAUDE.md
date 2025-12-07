@@ -269,6 +269,13 @@ Generates human-readable card preview.
     │   ├── dedup.py                 # String + semantic dedup (FAISS/embeddings)
     │   ├── codex.py                 # Prompt builders, two-stage pipeline, parsing
     │   └── state.py                 # StateTracker, run directory helpers
+    ├── tests/                       # Test suite (pytest)
+    │   ├── conftest.py              # Shared fixtures
+    │   ├── test_scoring.py          # Tests for detect_signals, extract_key_terms
+    │   ├── test_normalization.py    # Tests for normalize_text, quick_similarity
+    │   ├── test_parsing.py          # Tests for parse_chat_entries, extract_turns
+    │   ├── test_date_filter.py      # Tests for DateRangeFilter
+    │   └── test_dedup.py            # Tests for is_duplicate_context
     ├── anki_review_ui.py            # Interactive review UI (Shiny app, 1050+ lines)
     ├── anki_connect.py              # AnkiConnect HTTP client (437 lines)
     ├── launch_ui.sh                 # Launch script for review UI
@@ -410,6 +417,49 @@ Generates human-readable card preview.
 3.  Update state tracking to handle new file types
 
 4.  Test deduplication against existing cards
+
+### Running Tests
+
+The project has a pytest-based test suite covering core pure functions.
+
+**Run all tests:**
+
+```bash
+uv run pytest
+```
+
+**Run with coverage report:**
+
+```bash
+uv run pytest --cov=auto_anki --cov-report=term-missing
+```
+
+**Run specific test file:**
+
+```bash
+uv run pytest tests/test_scoring.py -v
+```
+
+**Test coverage by module:**
+
+| Module | Coverage | What's Tested |
+|--------|----------|---------------|
+| `contexts.py` | ~51% | `detect_signals`, `extract_key_terms`, `parse_chat_entries`, `extract_turns`, `DateRangeFilter` |
+| `cards.py` | ~31% | `normalize_text` |
+| `dedup.py` | ~23% | `is_duplicate_context`, `quick_similarity` |
+
+**What's NOT tested (requires mocking):**
+
+- `codex.py` - LLM integration
+- `state.py` - File I/O operations
+- `load_cards_from_anki` - AnkiConnect dependency
+
+**Adding new tests:**
+
+1. Create test file in `tests/` following `test_*.py` naming
+2. Import functions from `auto_anki.*` modules
+3. Use fixtures from `conftest.py` for sample data
+4. Run `uv run pytest tests/your_test.py -v` to verify
 
 ## Important Patterns & Conventions
 

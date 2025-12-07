@@ -154,6 +154,26 @@ If you want to modify the script:
 uv run auto-anki --verbose
 ```
 
+### Running Tests
+
+The project includes a pytest-based test suite:
+
+```bash
+# Install dev dependencies (pytest, pytest-cov)
+uv pip install pytest pytest-cov
+
+# Run all tests
+uv run pytest
+
+# Run with coverage
+uv run pytest --cov=auto_anki --cov-report=term-missing
+
+# Run specific test file
+uv run pytest tests/test_scoring.py -v
+```
+
+**97 tests** cover core functions: scoring, normalization, parsing, date filtering, and deduplication.
+
 ## Uninstall
 
 ```bash
