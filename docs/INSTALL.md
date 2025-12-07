@@ -1,5 +1,22 @@
 # Installation Guide
 
+## Prerequisites
+
+### AnkiConnect Plugin (Required)
+
+The tool loads existing cards directly from Anki via the AnkiConnect plugin. **Anki must be running** whenever you use the tool.
+
+1. Open Anki
+2. Go to **Tools → Add-ons → Get Add-ons...**
+3. Enter code: `2055492159`
+4. Restart Anki
+
+Verify it's working:
+```bash
+curl http://localhost:8765 -X POST -d '{"action": "version", "version": 6}'
+# Should return: {"result": 6, "error": null}
+```
+
 ## Using uv (Recommended)
 
 The easiest way to use this tool is with `uv`, which handles dependencies automatically.
@@ -14,7 +31,26 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Install the tool (creates isolated environment)
 uv pip install -e .
+
+# Optional: Install semantic deduplication dependencies
+uv pip install -e ".[semantic]"
 ```
+
+### Configuration
+
+Create `auto_anki_config.json` in your working directory:
+
+```json
+{
+  "chat_root": "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/chatgpt",
+  "decks": [
+    "Research Learning",
+    "Technology Learning"
+  ]
+}
+```
+
+**Important:** The `decks` list must match your actual Anki deck names exactly.
 
 ### Running the Tool
 
@@ -34,8 +70,8 @@ auto-anki --date-range 2025-10 --max-contexts 20 --verbose
 # Daily run (unprocessed only)
 uv run auto-anki --unprocessed-only --verbose
 
-# Process specific month with mini model
-uv run auto-anki --date-range 2025-10 --codex-model gpt-5-codex-mini
+# Process specific month
+uv run auto-anki --date-range 2025-10 --verbose
 
 # Dry run to test
 uv run auto-anki --date-range 2025-10 --max-contexts 5 --dry-run
@@ -46,11 +82,14 @@ uv run auto-anki --help
 
 ## Performance Improvements
 
-The tool now caches parsed HTML decks in `.deck_cache/` directory. This makes subsequent runs much faster:
+The tool caches card data from AnkiConnect in `.deck_cache/` directory:
 
-- **First run**: Parses all HTML files (slow, ~10-30 seconds)
-- **Subsequent runs**: Loads from cache (fast, <1 second)
-- **Cache invalidation**: Automatic when HTML files are modified
+- **First run**: Fetches cards from Anki (fast, ~1-5 seconds depending on deck size)
+- **Subsequent runs within TTL**: Loads from cache (instant)
+- **Cache invalidation**: Automatic when cards are added/modified in Anki
+- **Default TTL**: 5 minutes (configurable via `--anki-cache-ttl`)
+
+Semantic deduplication embeddings are also cached for faster duplicate detection.
 
 ## Directory Structure
 
@@ -58,25 +97,41 @@ After setup:
 ```
 collections/
 ├── auto_anki_agent.py          # Main script
+├── auto_anki/                  # Core Python package
 ├── pyproject.toml              # Package config
-├── .deck_cache/                # Parsed card cache (auto-created)
-│   ├── Research_Learning_cards.json
-│   ├── Technology_Learning_cards.json
-│   └── Moody_s_Learning_cards.json
+├── auto_anki_config.json       # Your configuration
+├── .deck_cache/                # Card + embedding cache (auto-created)
+│   ├── anki_cards_cache.json   # Cached card data from Anki
+│   └── embeddings/             # Semantic dedup embeddings
 ├── .auto_anki_agent_state.json # Processing state
-├── auto_anki_runs/             # Output directory
-└── *.html                      # Your existing Anki decks
+└── auto_anki_runs/             # Output directory
 ```
 
 ## Troubleshooting
+
+### "Cannot connect to Anki"
+
+1. Make sure Anki is running
+2. Verify AnkiConnect plugin is installed (code: 2055492159)
+3. Test connection:
+   ```bash
+   curl http://localhost:8765 -X POST -d '{"action": "version", "version": 6}'
+   ```
+
+### "No decks specified"
+
+Add a `decks` list to your `auto_anki_config.json` or use `--decks` flag:
+```bash
+uv run auto-anki --decks "Research Learning" "Technology Learning" --verbose
+```
 
 ### Command not found: auto-anki
 
 Use `uv run auto-anki` instead of just `auto-anki`.
 
-### Still hanging on HTML parsing
+### Cache issues
 
-Delete the cache and regenerate:
+Delete the cache and let it regenerate:
 ```bash
 rm -rf .deck_cache
 uv run auto-anki --verbose
@@ -93,7 +148,7 @@ uv pip install --upgrade -e .
 If you want to modify the script:
 
 ```bash
-# Make changes to auto_anki_agent.py
+# Make changes to auto_anki/*.py files
 
 # No reinstall needed! Changes take effect immediately
 uv run auto-anki --verbose

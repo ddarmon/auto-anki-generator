@@ -81,9 +81,11 @@ Minimal example:
 ```json
 {
   "chat_root": "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/chatgpt",
-  "deck_glob": "*.html"
+  "decks": ["Research Learning", "Technology Learning"]
 }
 ```
+
+**Prerequisite:** Anki must be running with AnkiConnect plugin (code: 2055492159).
 
 ## Troubleshooting
 

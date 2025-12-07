@@ -32,7 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from auto_anki.cards import Card, collect_decks
+from auto_anki.cards import Card, load_cards_from_anki
 from auto_anki.contexts import (
     ChatTurn,
     Conversation,
@@ -101,8 +101,15 @@ def parse_args() -> argparse.Namespace:
         description="Harvest chat transcripts + deck coverage and ask codex exec to propose new Anki cards."
     )
     parser.add_argument(
-        "--deck-glob",
-        help="Glob for HTML decks (default: <script_dir>/*.html).",
+        "--decks",
+        nargs="+",
+        help="Anki deck names to load existing cards from (overrides config).",
+    )
+    parser.add_argument(
+        "--anki-cache-ttl",
+        type=int,
+        default=5,
+        help="Cache TTL in minutes for AnkiConnect card fetch (default: %(default)s).",
     )
     parser.add_argument(
         "--chat-root",
@@ -135,7 +142,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cache-dir",
         help=(
-            "Directory to cache parsed HTML decks and semantic embedding index "
+            "Directory to cache Anki cards and semantic embedding index "
             "(default: <script_dir>/.deck_cache)."
         ),
     )
@@ -421,20 +428,13 @@ def main() -> None:
         return path
 
     # Paths (CLI overrides config; config overrides hardcoded defaults)
-    # Deck glob is a pattern, so we handle it separately from plain paths.
-    if args.deck_glob:
-        deck_glob = args.deck_glob
-    elif "deck_glob" in config:
-        pattern = str(config["deck_glob"])
-        if config_root is not None and not os.path.isabs(pattern):
-            deck_glob = str((config_root / pattern))
-        else:
-            deck_glob = pattern
-    else:
-        # If a config file exists but didn't specify deck_glob, default to
-        # "*.html" in the config directory; otherwise fall back to SCRIPT_DIR.
-        base = config_root or SCRIPT_DIR
-        deck_glob = str(base / "*.html")
+    # Decks list (CLI overrides config)
+    decks = args.decks if args.decks else config.get("decks", [])
+    if not decks:
+        print("Error: No decks specified.")
+        print("Add 'decks' to auto_anki_config.json or use --decks flag.")
+        print("Example: --decks Research_Learning Technology_Learning")
+        sys.exit(1)
     state_path = (
         Path(args.state_file).expanduser()
         if args.state_file
@@ -472,12 +472,24 @@ def main() -> None:
     date_filter = DateRangeFilter(args.date_range) if args.date_range else None
     seen_conversation_ids = state_tracker.get_seen_conversation_ids()
 
-    # Load existing cards (with caching for speed)
+    # Load existing cards from Anki via AnkiConnect
     if args.verbose:
-        print(f"Loading existing cards from {deck_glob}...")
-    cards = collect_decks(deck_glob, cache_dir)
+        print(f"Loading existing cards from Anki decks: {', '.join(decks)}...")
+    try:
+        cards = load_cards_from_anki(
+            decks,
+            cache_dir=cache_dir,
+            cache_ttl_minutes=args.anki_cache_ttl,
+            verbose=args.verbose,
+        )
+    except ConnectionError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     if args.verbose:
-        print(f"✓ Loaded {len(cards)} cards")
+        print(f"✓ Loaded {len(cards)} cards from Anki")
         if date_filter and date_filter.start_date:
             print(f"Date filter: {date_filter.start_date} to {date_filter.end_date or 'now'}")
         if args.unprocessed_only:

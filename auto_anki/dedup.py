@@ -132,11 +132,11 @@ class SemanticCardIndex:
         if meta.get("card_count") != len(cards):
             return False
 
-        # Check deck file mtimes
-        current_deck_files = self._get_deck_mtimes(cards)
-        cached_deck_files = meta.get("deck_files", {})
+        # Check note IDs match (detects additions/deletions/modifications)
+        current_note_ids = self._get_note_ids(cards)
+        cached_note_ids = meta.get("note_ids", [])
 
-        if current_deck_files != cached_deck_files:
+        if current_note_ids != cached_note_ids:
             return False
 
         return True
@@ -152,7 +152,7 @@ class SemanticCardIndex:
             # Save metadata
             meta = {
                 "model_name": self.model_name,
-                "deck_files": self._get_deck_mtimes(cards),
+                "note_ids": self._get_note_ids(cards),
                 "card_count": len(cards),
                 "embedding_dim": self.index.d,
                 "created_at": datetime.now().isoformat(),
@@ -164,15 +164,10 @@ class SemanticCardIndex:
             if self.verbose:
                 print(f"  Warning: Failed to save cache: {e}")
 
-    def _get_deck_mtimes(self, cards: List[Card]) -> Dict[str, float]:
-        """Get dict of deck file paths -> mtimes for cache invalidation."""
-        deck_files: Dict[str, float] = {}
-        for card in cards:
-            if card.source_path and card.source_path.exists():
-                path = str(card.source_path)
-                if path not in deck_files:
-                    deck_files[path] = card.source_path.stat().st_mtime
-        return deck_files
+    def _get_note_ids(self, cards: List[Card]) -> List[int]:
+        """Get sorted list of note IDs for cache invalidation."""
+        note_ids = [c.note_id for c in cards if c.note_id is not None]
+        return sorted(note_ids)
 
     def is_duplicate(self, context: ChatTurn, threshold: float) -> bool:
         """Return True if context is semantically close to any existing card."""

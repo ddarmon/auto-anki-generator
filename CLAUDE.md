@@ -33,7 +33,8 @@ generation to an LLM "decision layer" that understands:
     └─────────────────────────────────────────────────────────────────┘
 
     1. HARVEST PHASE
-       ├─ Parse existing Anki decks (HTML) → Card objects
+       ├─ Load existing cards from Anki via AnkiConnect → Card objects
+       │  └─ Requires Anki running with AnkiConnect plugin
        ├─ Scan ChatGPT export folder (markdown) → Conversation objects
        │  └─ Each Conversation contains multiple ChatTurn objects
        ├─ Split long conversations at topic boundaries
@@ -162,12 +163,13 @@ Manages `.auto_anki_agent_state.json` for incremental processing.
 
 ### Key Functions
 
-#### `parse_decks(deck_files) -> List[Card]`
+#### `load_cards_from_anki(deck_names, ...) -> List[Card]`
 
-Parses HTML Anki deck exports using BeautifulSoup.
+Loads existing cards from Anki via AnkiConnect.
 
--   Extracts front/back from `<td>` elements
--   Handles malformed HTML gracefully
+-   Requires Anki running with AnkiConnect plugin (code: 2055492159)
+-   Fetches cards from specified deck names
+-   Caches results with configurable TTL (default: 5 minutes)
 -   Returns list of existing cards for deduplication
 
 #### `harvest_conversations(...) -> List[Conversation]`
@@ -262,7 +264,7 @@ Generates human-readable card preview.
     ├── auto_anki/                   # Core Python package
     │   ├── __init__.py              # Package entry
     │   ├── cli.py                   # `auto-anki` console script entrypoint
-    │   ├── cards.py                 # Card dataclass, HTML parsing, deck caching
+    │   ├── cards.py                 # Card dataclass, AnkiConnect card loading
     │   ├── contexts.py              # Chat harvesting, scoring, ChatTurn
     │   ├── dedup.py                 # String + semantic dedup (FAISS/embeddings)
     │   ├── codex.py                 # Prompt builders, two-stage pipeline, parsing
@@ -303,7 +305,7 @@ Generates human-readable card preview.
 **What to read first:**
 
 1.  This file (CLAUDE.md) - architecture overview
-2.  `auto_anki/cards.py` - `Card`, HTML parsing, deck caching
+2.  `auto_anki/cards.py` - `Card`, AnkiConnect card loading
 3.  `auto_anki/contexts.py` - `Conversation`, `ChatTurn`, `harvest_conversations()`
 4.  `auto_anki/dedup.py` - `SemanticCardIndex`, `prune_conversations()`
 5.  `auto_anki/codex.py` - `build_conversation_prompt()`, `run_codex_pipeline()`
@@ -415,7 +417,7 @@ Generates human-readable card preview.
 
 **The script is defensive but not silent:**
 
--   HTML parsing: Gracefully handle malformed decks
+-   AnkiConnect: Clear error if Anki not running
 -   JSON parsing: Use `json_repair` for broken responses
 -   File I/O: Check existence, create directories as needed
 -   LLM responses: Validate structure, provide helpful errors
@@ -516,19 +518,20 @@ python3 auto_anki_agent.py \
 -   Section headers for conversation boundaries
 -   Timestamp extraction for filtering
 
-### Input: Anki HTML Decks
+### Input: Anki Cards via AnkiConnect
 
-**Expected format:**
+**Requirements:**
 
--   HTML table structure (`<table>`, `<tr>`, `<td>`)
--   First `<td>` = Front, second `<td>` = Back
--   Deck name from filename
+-   Anki must be running
+-   AnkiConnect plugin installed (code: 2055492159)
+-   Deck names specified in config or via `--decks` flag
 
-**Parse logic:**
+**Fetch logic:**
 
--   BeautifulSoup HTML parsing
--   Text extraction with `.get_text()`
--   Deduplication via string similarity
+-   Query note IDs via `findNotes(deck:"DeckName")`
+-   Fetch note details via `notesInfo()`
+-   Extract Front/Back fields
+-   Cache with configurable TTL (default: 5 minutes)
 
 ### Output: Codex Exec
 
@@ -778,7 +781,7 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 
 ### Key Functions
 
--   `parse_decks()` - Load existing cards
+-   `load_cards_from_anki()` - Load cards via AnkiConnect
 -   `harvest_conversations()` - Extract full conversations
 -   `split_conversation_by_topic()` - Split long conversations
 -   `detect_signals()` - Score individual turns

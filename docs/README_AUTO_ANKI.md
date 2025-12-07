@@ -49,10 +49,11 @@ python3 auto_anki_agent.py \
 - `--unprocessed-only`: Only process files not yet in state file
 - `--output-format {json,markdown,both}`: Choose output format (default: both)
 - `--chat-root PATH`: Root directory containing conversation files
-- `--deck-glob PATTERN`: Glob pattern for HTML deck files
+- `--decks DECK [DECK ...]`: Anki deck names to load existing cards from (overrides config)
+- `--anki-cache-ttl MINUTES`: Cache TTL for AnkiConnect card fetch (default: 5)
 - `--state-file PATH`: Custom state file location
 - `--output-dir PATH`: Where to save run artifacts
-- `--cache-dir PATH`: Directory for parsed deck + semantic embedding cache (default: .deck_cache next to script)
+- `--cache-dir PATH`: Directory for Anki card cache + semantic embedding cache (default: .deck_cache)
 
 ### Conversation Processing
 - `--max-contexts N`: Maximum conversations to gather per run (default: 24)
@@ -97,22 +98,28 @@ Rules:
 Supported keys mirror the CLI options:
 
 - `chat_root`
-- `deck_glob`
+- `decks` - List of Anki deck names to load cards from
 - `state_file`
 - `output_dir`
 - `cache_dir`
 
-Example `auto_anki_config.json` next to your collection:
+Example `auto_anki_config.json`:
 
 ```json
 {
   "chat_root": "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/chatgpt",
-  "deck_glob": "*.html",
+  "decks": [
+    "Research Learning",
+    "Technology Learning",
+    "Personal Learning"
+  ],
   "state_file": ".auto_anki_agent_state.json",
   "output_dir": "auto_anki_runs",
   "cache_dir": ".deck_cache"
 }
 ```
+
+**Important:** Anki must be running with AnkiConnect plugin installed (code: 2055492159) for card loading to work.
 
 ## Output Files
 

@@ -1,23 +1,25 @@
 """
-Card structures and deck parsing helpers.
+Card structures and Anki deck loading via AnkiConnect.
 
 This module owns:
 - `Card` dataclass
 - `normalize_text` utility
-- HTML deck parsing (`parse_html_deck`)
-- Deck collection with optional caching (`collect_decks`)
+- `load_cards_from_anki` (AnkiConnect-based card loading)
 """
 
 from __future__ import annotations
 
 import json
 import re
+import sys
+import time
 from dataclasses import dataclass, asdict
-from glob import glob
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
-from bs4 import BeautifulSoup  # type: ignore
+# Import AnkiConnect client
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from anki_connect import AnkiConnectClient, AnkiConnectError
 
 
 def normalize_text(value: str) -> str:
@@ -36,102 +38,191 @@ class Card:
     data_search: str
     front_norm: str
     back_norm: str
-    # Track source HTML file for cache invalidation
-    source_path: Optional[Path] = None
+    # Track Anki note ID for cache invalidation
+    note_id: Optional[int] = None
 
 
-def parse_html_deck(html_path: Path, cache_path: Optional[Path] = None) -> List[Card]:
-    """Parse HTML deck with optional caching to avoid re-parsing large files."""
-    # Check cache if provided
-    if cache_path and cache_path.exists():
-        try:
-            cache_data = json.loads(cache_path.read_text())
-            # Check if HTML file hasn't been modified since cache
-            html_mtime = html_path.stat().st_mtime
-            if cache_data.get("html_mtime") == html_mtime:
-                # Reconstruct Card objects from cache
-                return [
-                    Card(
-                        deck=c["deck"],
-                        front=c["front"],
-                        back=c["back"],
-                        tags=c["tags"],
-                        meta=c["meta"],
-                        data_search=c["data_search"],
-                        front_norm=c["front_norm"],
-                        back_norm=c["back_norm"],
-                        source_path=html_path,
-                    )
-                    for c in cache_data["cards"]
-                ]
-        except (json.JSONDecodeError, KeyError):
-            # Cache invalid, fall back to parsing
-            pass
+def load_cards_from_anki(
+    deck_names: List[str],
+    cache_dir: Optional[Path] = None,
+    cache_ttl_minutes: int = 5,
+    verbose: bool = False,
+) -> List[Card]:
+    """
+    Load existing cards from Anki via AnkiConnect.
 
-    # Parse HTML (this can be slow for large files)
-    soup = BeautifulSoup(html_path.read_text(), "html.parser")
-    deck = html_path.stem.replace("_", " ")
-    cards: List[Card] = []
-    for section in soup.select("section.card-wrapper"):
-        front_el = section.select_one(".front")
-        back_el = section.select_one(".back")
-        if not front_el or not back_el:
-            continue
-        front = front_el.get_text("\n", strip=True)
-        back = back_el.get_text("\n", strip=True)
-        meta_el = section.select_one(".card-meta")
-        meta_text = meta_el.get_text(" ", strip=True) if meta_el else ""
-        data_search = section.get("data-search") or ""
-        tags = [
-            tag.strip()
-            for chunk in meta_text.split("--")
-            for tag in [chunk.strip()]
-            if tag
-        ]
-        cards.append(
-            Card(
-                deck=deck,
-                front=front,
-                back=back,
-                tags=tags,
-                meta=meta_text,
-                data_search=data_search,
-                front_norm=normalize_text(front),
-                back_norm=normalize_text(back),
-                source_path=html_path,
-            )
+    Requires Anki to be running with AnkiConnect plugin installed.
+
+    Args:
+        deck_names: List of Anki deck names to load cards from
+        cache_dir: Directory for caching card data (optional)
+        cache_ttl_minutes: Cache time-to-live in minutes (default: 5)
+        verbose: Print progress information
+
+    Returns:
+        List of Card objects from the specified decks
+
+    Raises:
+        ConnectionError: If cannot connect to Anki
+        RuntimeError: If no decks specified
+    """
+    if not deck_names:
+        raise RuntimeError("No decks specified. Add 'decks' to config or use --decks flag.")
+
+    client = AnkiConnectClient()
+
+    # Check connection
+    if not client.check_connection():
+        raise ConnectionError(
+            "Cannot connect to Anki. "
+            "Make sure Anki is running with AnkiConnect plugin installed (code: 2055492159)."
         )
 
-    # Save to cache if path provided
-    if cache_path:
+    # Check cache
+    if cache_dir:
+        cache_path = Path(cache_dir) / "anki_cards_cache.json"
+        cached_cards = _load_from_cache(cache_path, deck_names, cache_ttl_minutes)
+        if cached_cards is not None:
+            if verbose:
+                print(f"  ✓ Loaded {len(cached_cards)} cards from cache")
+            return cached_cards
+
+    # Fetch cards from Anki
+    if verbose:
+        print(f"Loading cards from Anki decks: {', '.join(deck_names)}...")
+
+    cards: List[Card] = []
+    for deck in deck_names:
+        deck_cards = _fetch_deck_cards(client, deck, verbose)
+        cards.extend(deck_cards)
+
+    if verbose:
+        print(f"  ✓ Loaded {len(cards)} cards from {len(deck_names)} deck(s)")
+
+    # Save to cache
+    if cache_dir:
+        cache_path = Path(cache_dir) / "anki_cards_cache.json"
+        _save_to_cache(cache_path, cards, deck_names)
+
+    return cards
+
+
+def _fetch_deck_cards(client: AnkiConnectClient, deck: str, verbose: bool) -> List[Card]:
+    """Fetch cards from a single deck via AnkiConnect."""
+    try:
+        # Find notes in deck
+        note_ids = client.find_notes(f'deck:"{deck}"')
+
+        if not note_ids:
+            if verbose:
+                print(f"  Warning: Deck '{deck}' has 0 cards")
+            return []
+
+        # Get note info
+        notes_info = client.get_notes_info(note_ids)
+
+        cards = []
+        for note in notes_info:
+            fields = note.get("fields", {})
+            front = fields.get("Front", {}).get("value", "")
+            back = fields.get("Back", {}).get("value", "")
+
+            if not front and not back:
+                continue
+
+            cards.append(
+                Card(
+                    deck=deck,
+                    front=front,
+                    back=back,
+                    tags=note.get("tags", []),
+                    meta="",
+                    data_search="",
+                    front_norm=normalize_text(front),
+                    back_norm=normalize_text(back),
+                    note_id=note.get("noteId"),
+                )
+            )
+
+        if verbose:
+            print(f"    {deck}: {len(cards)} cards")
+
+        return cards
+
+    except AnkiConnectError as e:
+        if verbose:
+            print(f"  Warning: Failed to fetch deck '{deck}': {e}")
+        return []
+
+
+def _load_from_cache(
+    cache_path: Path,
+    deck_names: List[str],
+    cache_ttl_minutes: int,
+) -> Optional[List[Card]]:
+    """Load cards from cache if valid and not expired."""
+    if not cache_path.exists():
+        return None
+
+    try:
+        cache_data = json.loads(cache_path.read_text())
+
+        # Check deck list matches
+        if set(cache_data.get("deck_names", [])) != set(deck_names):
+            return None
+
+        # Check TTL
+        cached_time = cache_data.get("cached_at", 0)
+        age_minutes = (time.time() - cached_time) / 60
+        if age_minutes > cache_ttl_minutes:
+            return None
+
+        # Reconstruct Card objects
+        return [
+            Card(
+                deck=c["deck"],
+                front=c["front"],
+                back=c["back"],
+                tags=c["tags"],
+                meta=c.get("meta", ""),
+                data_search=c.get("data_search", ""),
+                front_norm=c["front_norm"],
+                back_norm=c["back_norm"],
+                note_id=c.get("note_id"),
+            )
+            for c in cache_data.get("cards", [])
+        ]
+
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+
+def _save_to_cache(cache_path: Path, cards: List[Card], deck_names: List[str]) -> None:
+    """Save cards to cache."""
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_data = {
-            "html_mtime": html_path.stat().st_mtime,
+            "deck_names": deck_names,
+            "cached_at": time.time(),
+            "card_count": len(cards),
             "cards": [
-                {k: v for k, v in asdict(c).items() if k != "source_path"}
+                {
+                    "deck": c.deck,
+                    "front": c.front,
+                    "back": c.back,
+                    "tags": c.tags,
+                    "meta": c.meta,
+                    "data_search": c.data_search,
+                    "front_norm": c.front_norm,
+                    "back_norm": c.back_norm,
+                    "note_id": c.note_id,
+                }
                 for c in cards
             ],
         }
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache_data, indent=2))
-
-    return cards
-
-
-def collect_decks(pattern: str, cache_dir: Optional[Path] = None) -> List[Card]:
-    """Collect cards from HTML decks with optional caching."""
-    cards: List[Card] = []
-    for path_str in sorted(glob(pattern)):
-        path = Path(path_str)
-        if not path.is_file():
-            continue
-
-        # Use cache if cache_dir provided
-        cache_path = None
-        if cache_dir:
-            cache_path = cache_dir / f"{path.stem}_cards.json"
-
-        cards.extend(parse_html_deck(path, cache_path))
-    return cards
+    except Exception:
+        pass  # Best-effort caching
 
 
-__all__ = ["Card", "normalize_text", "parse_html_deck", "collect_decks"]
+__all__ = ["Card", "normalize_text", "load_cards_from_anki"]
