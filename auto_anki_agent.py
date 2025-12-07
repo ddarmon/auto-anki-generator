@@ -26,10 +26,11 @@ import argparse
 import json
 import os
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from auto_anki.cards import Card, collect_decks
 from auto_anki.contexts import (
@@ -221,7 +222,15 @@ def parse_args() -> argparse.Namespace:
         "--min-score",
         type=float,
         default=1.2,
-        help="Minimum heuristic score a context must reach to be considered.",
+        help="Minimum heuristic score a context must reach to be considered (only used with --use-filter-heuristics).",
+    )
+    parser.add_argument(
+        "--use-filter-heuristics",
+        action="store_true",
+        help=(
+            "Enable heuristic pre-filtering before Stage 1 LLM. "
+            "By default, all conversations are sent directly to Stage 1 LLM filter."
+        ),
     )
     parser.add_argument(
         "--max-chat-files",
@@ -328,6 +337,73 @@ def ensure_run_dir(base_dir: Path) -> Path:
     run_dir = base_dir / f"run-{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
+
+
+def _process_stage2_batch(
+    batch_info: Tuple[int, List[Conversation], List[Card], Path, Any],
+) -> Dict[str, Any]:
+    """Process a single Stage 2 batch. Used for parallel execution.
+
+    Args:
+        batch_info: Tuple of (batch_idx, filtered_conversations, cards_for_prompt, run_dir, args)
+
+    Returns:
+        Dict with keys: success, batch_idx, cards, skipped_conversations, skipped_turns,
+                       conversation_ids, source_paths, error
+    """
+    batch_idx, filtered_chunk, cards_for_prompt, run_dir, args = batch_info
+
+    result: Dict[str, Any] = {
+        "success": False,
+        "batch_idx": batch_idx,
+        "cards": [],
+        "skipped_conversations": 0,
+        "skipped_turns": 0,
+        "conversation_ids": [],
+        "source_paths": [],
+        "error": None,
+    }
+
+    try:
+        prompt = build_conversation_prompt(cards_for_prompt, filtered_chunk, args)
+
+        stage2_model = args.codex_model_stage2 if args.two_stage else None
+        stage2_reasoning = args.model_reasoning_effort or ("high" if args.two_stage else "medium")
+
+        response_text = run_codex_exec(
+            prompt,
+            batch_idx,
+            run_dir,
+            args,
+            model_override=stage2_model,
+            reasoning_override=stage2_reasoning,
+            label="",
+        )
+
+        response_json = parse_codex_response_robust(
+            response_text, batch_idx, run_dir, args.verbose, label=""
+        )
+
+        if response_json is None:
+            result["error"] = "Could not parse JSON response"
+            return result
+
+        result["success"] = True
+        result["cards"] = response_json.get("cards", [])
+        result["skipped_conversations"] = len(response_json.get("skipped_conversations", []))
+        result["skipped_turns"] = len(response_json.get("skipped_turns", []))
+
+        # Track processed conversations
+        for conv in filtered_chunk:
+            result["conversation_ids"].append(conv.conversation_id)
+            result["source_paths"].append(conv.source_path)
+
+    except Exception as e:
+        error_file = run_dir / f"codex_ERROR_batch_{batch_idx:02d}.txt"
+        error_file.write_text(f"Error processing batch {batch_idx}:\n\n{str(e)}")
+        result["error"] = str(e)[:200]
+
+    return result
 
 
 def main() -> None:
@@ -469,6 +545,11 @@ def main() -> None:
     if args.verbose:
         print(f"\nProcessing {len(conversations)} conversations in {total_chunks} batch(es)...")
 
+    # ========================================================================
+    # PHASE 1: Stage 1 filtering (sequential - it's fast)
+    # ========================================================================
+    stage2_batches: List[Tuple[int, List[Conversation]]] = []
+
     for idx, chunk in enumerate(chunked(conversations, conversations_per_batch), start=1):
         if args.verbose:
             chunk_turns = sum(len(c.turns) for c in chunk)
@@ -550,72 +631,69 @@ def main() -> None:
                 print("   Falling back to sending all conversations to stage 2.")
                 filtered_chunk = chunk
 
-        # Stage-2: conversation-level card generation
-        prompt = build_conversation_prompt(cards_for_prompt, filtered_chunk, args)
-        if args.dry_run:
+        # Handle dry-run for non-two-stage mode
+        if args.dry_run and not args.two_stage:
             prompt_path = run_dir / f"prompt_batch_{idx:02d}.txt"
+            prompt = build_conversation_prompt(cards_for_prompt, filtered_chunk, args)
             prompt_path.write_text(prompt)
             if args.verbose:
                 print(f"[dry-run] Saved prompt at {prompt_path}")
             continue
 
+        # Queue for Stage 2 processing
+        if filtered_chunk:
+            stage2_batches.append((idx, filtered_chunk))
+
+    # ========================================================================
+    # PHASE 2: Stage 2 card generation (parallel - this is the bottleneck)
+    # ========================================================================
+    if stage2_batches and not args.dry_run:
         if args.verbose:
-            print(f"Calling codex for batch {idx} (stage 2)...")
+            print(f"\n{'='*60}")
+            print(f"Stage 2: Generating cards for {len(stage2_batches)} batch(es) in parallel...")
+            print(f"{'='*60}")
 
-        try:
-            stage2_model = args.codex_model_stage2 if args.two_stage else None
-            stage2_reasoning = args.model_reasoning_effort or ("high" if args.two_stage else "medium")
+        # Prepare batch info for parallel processing
+        batch_infos = [
+            (idx, filtered_chunk, cards_for_prompt, run_dir, args)
+            for idx, filtered_chunk in stage2_batches
+        ]
 
-            response_text = run_codex_exec(
-                prompt,
-                idx,
-                run_dir,
-                args,
-                model_override=stage2_model,
-                reasoning_override=stage2_reasoning,
-                label="",
-            )
+        # Process in parallel with max 3 concurrent workers
+        max_workers = min(3, len(batch_infos))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_idx = {
+                executor.submit(_process_stage2_batch, info): info[0]
+                for info in batch_infos
+            }
 
-            if args.verbose:
-                print(f"✓ Received response (batch {idx})")
+            for future in as_completed(future_to_idx):
+                batch_idx = future_to_idx[future]
+                try:
+                    result = future.result()
 
-            response_json = parse_codex_response_robust(
-                response_text, idx, run_dir, args.verbose, label=""
-            )
+                    if result["success"]:
+                        chunk_stats["success"] += 1
+                        cards_in_batch = len(result["cards"])
+                        all_proposed_cards.extend(result["cards"])
+                        chunk_stats["total_cards"] += cards_in_batch
 
-            if response_json is None:
-                chunk_stats["failed"] += 1
-                print(f"⚠️  Batch {idx} FAILED: Could not parse JSON")
-                continue
+                        if args.verbose:
+                            print(f"✓ Batch {result['batch_idx']} complete:")
+                            print(f"    {cards_in_batch} cards proposed")
+                            print(f"    {result['skipped_conversations']} conversations skipped, {result['skipped_turns']} turns skipped")
 
-            chunk_stats["success"] += 1
+                        # Track processed conversations
+                        new_conversation_ids.extend(result["conversation_ids"])
+                        for path in result["source_paths"]:
+                            processed_files.add(Path(path))
+                    else:
+                        chunk_stats["failed"] += 1
+                        print(f"⚠️  Batch {result['batch_idx']} FAILED: {result['error']}")
 
-            # Track proposed cards
-            cards_in_batch = 0
-            if "cards" in response_json:
-                cards_in_batch = len(response_json["cards"])
-                all_proposed_cards.extend(response_json["cards"])
-                chunk_stats["total_cards"] += cards_in_batch
-
-            skipped_convs = len(response_json.get("skipped_conversations", []))
-            skipped_turns = len(response_json.get("skipped_turns", []))
-
-            if args.verbose:
-                print(f"✓ Batch {idx} complete:")
-                print(f"    {cards_in_batch} cards proposed")
-                print(f"    {skipped_convs} conversations skipped, {skipped_turns} turns skipped")
-
-            # Track processed conversations
-            for conv in filtered_chunk:
-                new_conversation_ids.append(conv.conversation_id)
-                processed_files.add(Path(conv.source_path))
-
-        except Exception as e:
-            chunk_stats["failed"] += 1
-            error_file = run_dir / f"codex_ERROR_batch_{idx:02d}.txt"
-            error_file.write_text(f"Error processing batch {idx}:\n\n{str(e)}")
-            print(f"⚠️  Batch {idx} ERROR: {str(e)[:100]}")
-            continue
+                except Exception as e:
+                    chunk_stats["failed"] += 1
+                    print(f"⚠️  Batch {batch_idx} ERROR: {str(e)[:100]}")
 
     if not args.dry_run:
         if args.verbose:

@@ -869,8 +869,9 @@ def build_conversation_filter_prompt(
 ) -> str:
     """Build the stage-1 filter prompt for conversations.
 
-    Stage 1 should be fast and cheap: it only decides which conversations
-    are worth sending to the more expensive card-generation stage.
+    Stage 1 decides which conversations are worth sending to the more
+    expensive card-generation stage. It receives full conversation content
+    to make accurate quality decisions.
     """
     conversations_payload = [
         {
@@ -878,15 +879,12 @@ def build_conversation_filter_prompt(
             "source_title": conv.source_title,
             "key_topics": conv.key_topics,
             "turn_count": len(conv.turns),
-            "aggregate_score": round(conv.aggregate_score, 3),
-            "aggregate_signals": conv.aggregate_signals,
-            # Only include summaries, not full text
-            "turn_summaries": [
+            # Full conversation content for accurate quality assessment
+            "turns": [
                 {
                     "turn_index": turn.turn_index,
-                    "user_prompt_preview": turn.user_prompt[:150],
-                    "key_points": turn.key_points,
-                    "score": round(turn.score, 3),
+                    "user_prompt": turn.user_prompt,
+                    "assistant_response": turn.assistant_answer,
                 }
                 for turn in conv.turns
             ],
@@ -900,6 +898,7 @@ def build_conversation_filter_prompt(
                 "conversation_id": "string",
                 "keep": "boolean (true if worth sending to card generation)",
                 "reason": "short reason for keeping or skipping",
+                "estimated_cards": "integer (0-5, rough estimate of how many cards this could yield)",
             }
         ]
     }
@@ -915,33 +914,35 @@ def build_conversation_filter_prompt(
         Do NOT include markdown, explanations, or any text outside the JSON structure.
         Do NOT wrap the JSON in ```json blocks.
 
-        You are the fast, cheap *filtering* stage of an autonomous spaced-repetition agent.
+        You are the *filtering* stage of an autonomous spaced-repetition agent.
 
         ## Your Goal
 
-        Quickly decide which conversations are worth sending to a slower, more
-        expensive card-generation model.
+        Decide which conversations are worth sending to the card-generation stage.
+        You have full access to conversation content - use it to judge quality directly.
 
-        Focus on:
-        - Educational value (clear concepts, stable knowledge)
-        - Clarity and structure (good explanations, examples, lists)
-        - Non-trivial content (avoid obvious, shallow, or throwaway exchanges)
-        - Multiple turns with progression (shows learning journey)
+        ## Keep Conversations That Have:
 
-        ## Signals That a Conversation is Worth Keeping
+        - Educational value: clear explanations of concepts, definitions, or principles
+        - Stable knowledge: facts that will remain true, not rapidly changing info
+        - Good structure: examples, analogies, comparisons, or organized explanations
+        - Learning progression: follow-up questions showing deepening understanding
+        - Concrete topics: specific concepts that can become flashcards
 
-        - High aggregate_score
-        - Multiple question_turns (user was engaged)
-        - Definition or explanation content
-        - Concrete topics in key_topics
-        - Multi-turn progression toward understanding
+        ## Skip Conversations That Are:
 
-        ## Signals to Skip
+        - Trivial: obvious questions with shallow answers
+        - Procedural: step-by-step debugging, troubleshooting, or coding help
+        - Conversational: chit-chat, opinions, or highly context-dependent advice
+        - Incomplete: unresolved questions or partial explanations
+        - Ephemeral: time-sensitive info, current events, or rapidly changing details
 
-        - Low scores across all turns
-        - Trivial questions without substantive answers
-        - Debugging or troubleshooting without resolution
-        - Off-topic or conversational exchanges
+        ## Output
+
+        For each conversation, return:
+        - keep: true/false
+        - reason: brief explanation (1 sentence)
+        - estimated_cards: rough estimate (0-5) of useful cards this could generate
 
         You DO NOT generate cards here. Just filter.
 

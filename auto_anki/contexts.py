@@ -471,13 +471,20 @@ def build_conversation(
 
     # Build ChatTurn objects
     chat_turns: List[ChatTurn] = []
+    use_heuristics = getattr(args, "use_filter_heuristics", False)
+
     for turn_index, (user_entry, assistant_entry) in enumerate(raw_turns):
         combined_key = f"{path}:{user_entry.get('timestamp', '')}"
         context_id = sha256(
             (combined_key + user_entry["text"] + assistant_entry["text"]).encode("utf-8")
         ).hexdigest()
 
-        score, signals = detect_signals(user_entry["text"], assistant_entry["text"])
+        if use_heuristics:
+            score, signals = detect_signals(user_entry["text"], assistant_entry["text"])
+        else:
+            # Skip heuristics - assign neutral score, let Stage 1 LLM decide quality
+            score = 1.0
+            signals = {"heuristics_skipped": True}
 
         assistant_full = assistant_entry["text"].strip()
         assistant_trimmed = assistant_full[: args.assistant_char_limit]
@@ -719,10 +726,12 @@ def harvest_conversations(
         if conv.conversation_id in seen_conversation_ids:
             continue
 
-        # Filter by minimum aggregate score
-        min_score = getattr(args, "min_score", 1.2)
-        if conv.aggregate_score < min_score:
-            continue
+        # Filter by minimum aggregate score (only if heuristics enabled)
+        use_heuristics = getattr(args, "use_filter_heuristics", False)
+        if use_heuristics:
+            min_score = getattr(args, "min_score", 1.2)
+            if conv.aggregate_score < min_score:
+                continue
 
         # Split long conversations
         sub_convs = split_conversation_by_topic(conv, max_turns, max_chars)
