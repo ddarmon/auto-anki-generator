@@ -146,7 +146,7 @@ def build_codex_prompt(
         - When two concepts are easily confused, include cards that explicitly distinguish them
           (combat interference).
         - For cards derived from specific sources, include a reference line at the end:
-          "Reference: path/to/source" or "Reference: URL"
+          "**Reference:** path/to/source" or "**Reference:** URL"
         - For volatile facts (statistics, time-sensitive data), include a brief source or date when
           available, e.g. "(Source: US Census Bureau, 2021)".
 
@@ -620,6 +620,12 @@ def run_codex_pipeline(
                 )
                 filtered_chunk = chunk
 
+        # Track ALL files from the original chunk as "processed" (reviewed by Stage 1)
+        # This ensures files where Stage 1 skipped all conversations are still marked
+        # as processed and won't be re-sent on subsequent --unprocessed-only runs
+        for ctx in chunk:
+            processed_files.add(Path(ctx.source_path))
+
         # Stage 2: card generation
         if not filtered_chunk:
             if args.verbose:
@@ -691,9 +697,10 @@ def run_codex_pipeline(
                 print(f"    {cards_in_chunk} cards proposed")
                 print(f"    {skipped_in_chunk} contexts skipped")
 
+            # Track context IDs for contexts that made it through to Stage 2
+            # (Files are already tracked earlier from the original chunk)
             for ctx in filtered_chunk:
                 new_seen_ids.append(ctx.context_id)
-                processed_files.add(Path(ctx.source_path))
 
         except Exception as e:
             # Unexpected error - log and continue
@@ -957,7 +964,7 @@ def build_conversation_prompt(
         - When two concepts are easily confused, include cards that explicitly distinguish them
           (combat interference).
         - For cards derived from specific sources, include a reference line at the end:
-          "Reference: path/to/source" or "Reference: URL".
+          "**Reference:** path/to/source" or "**Reference:** URL".
         - For volatile facts (statistics, time-sensitive data), include a brief source or date when
           available, e.g. "(Source: US Census Bureau, 2021)".
 
