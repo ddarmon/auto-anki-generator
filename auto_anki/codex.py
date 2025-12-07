@@ -95,34 +95,116 @@ def build_codex_prompt(
 
         ## Core Philosophy
 
-        1. **Understand First, Memorize Second**: Each card should reflect a clear mental model,
-           flowing logically from general to specific concepts.
-        2. **Build Upon the Basics**: Order cards logically, starting with foundational concepts
-           before moving to detailed information.
+        1. **Understand First, Memorize Second**: First form a coherent mental model of the topic.
+           The generated cards should reflect this understanding, flowing logically from general
+           to specific concepts. For large topics, it is good to start with one or two high-level
+           summary cards before more detailed ones.
+        2. **Build Upon the Basics**: Order cards logically: foundational concepts and definitions
+           first, details and edge cases later. Each card must be self-contained but should also fit
+           into this logical progression.
+        3. **Match the Existing Deck Style**: Prefer natural-language question fronts and short,
+           focused explanations on the back, as in a hand-crafted Q/A deck.
 
         ## The Golden Rule: Minimum Information Principle
 
-        **Each card must isolate the smallest possible piece of information.**
+        The most important rule: **Each card must isolate the smallest useful piece of information.**
+        - One main idea per card
         - Questions should be precise and unambiguous
-        - Answers should be as short as possible while remaining complete
-        - NEVER create complex cards that cram multiple unrelated facts together
-        - Break down sets/lists into multiple atomic cards
+        - Answers should normally be 1–3 short sentences
+        - Use very small lists (2–4 items) only when the relationship between the items is the key concept
+        - NEVER ask the user to recall long unordered lists; break them into multiple cards instead
+        - If an answer wants to become a long paragraph or long list, split it into several cards
+          (e.g., one card per property or fact)
+
+        ## Front Style (Question Side)
+
+        - Default to natural-language questions ("What…", "How…", "Why…", "Where…", "When…", "In X, what is…").
+        - Only use non-question fronts when the natural form is "concept → definition"
+          (e.g., a term and its meaning).
+        - Optimize wording: remove filler words and keep the question as short and clear as possible.
+        - For ambiguous acronyms or overloaded terms, add a brief context tag at the start, e.g.
+          "(Biochemistry) What does GRE stand for?"
+        - Avoid referring to the chat or the model (no "in the conversation above" or "the assistant said").
+        - Make the front fully self-contained so it still makes sense outside this transcript.
+
+        ## Back Style (Answer Side)
+
+        - Give a concise, self-contained explanation that directly answers the front.
+        - Lead with the key idea or definition, then add a brief elaboration or example if helpful.
+        - Prefer short prose over heavy formatting; small numbered lists are fine for 2–4 clear steps
+          or items.
+        - Use vivid, concrete examples or mnemonics sparingly to make abstract ideas memorable.
+        - When two concepts are easily confused, include cards that explicitly distinguish them
+          (combat interference).
+        - For volatile facts (statistics, time-sensitive data), include a brief source or date when
+          available, e.g. "(Source: US Census Bureau, 2021)".
+
+        ## Math and Notation
+
+        - Use LaTeX-style math inline (e.g., `\\(x^2 + y^2 = z^2\\)` or
+          `\\[ \\int_0^1 f(x) \\, dx \\]`) when needed.
+        - Keep formulas embedded in explanatory sentences instead of as isolated blocks.
+        - You may use LaTeX like `\\mathbf{A}` for Roman letter vectors/matrices or
+          `\\boldsymbol{\\alpha}` for Greek letters when appropriate.
+        - Do NOT wrap math or answers in code fences.
+
+        ## Cloze Cards
+
+        - Use `card_style = "cloze"` for short facts, definitions, names, and items in a sequence
+          that can be hidden inline.
+        - On the front, use `[...]` to mark the part to be recalled within a full sentence.
+        - On the back, restate the full sentence with the missing part filled in, and bold the
+          recalled phrase if appropriate.
+        - For ordered processes, you may create overlapping cloze-style cards that walk through
+          the sequence step by step.
+
+        ## Difficult Information Types
+
+        - **Unordered sets (lists)**: NEVER ask the user to list more than 2–3 items. Instead,
+          create one card per item or per logically grouped subset.
+        - **Ordered lists / processes**: Prefer multiple small cards or overlapping cloze-style
+          cards over a single big "list all the steps" card.
+        - **Visual concepts**: If a picture would meaningfully aid understanding, you may add a
+          short placeholder hint in the back like "[Image: diagram of a plant cell]".
+
+        ## Formatting Inside Cards
+
+        - Use **bold** (`**text**`) for keywords, definitions, or the precise part of the answer
+          to be recalled.
+        - Use `inline code` (`` `text` ``) for function names, variables, commands, or short code.
+        - Use code blocks only when multi-line code is central to the concept.
+        - Use blockquotes (`> text`) for direct quotes or important statements, when appropriate.
+        - When introducing an acronym, consider writing the full term first, e.g.
+          "**Application Programming Interface (API)**".
 
         ## Card Formats
 
         Use the format that best fits the information:
 
-        1. **Question/Answer (basic)**: Default format for most concepts
-        2. **Cloze Deletion**: Ideal for facts, definitions, vocabulary
+        1. **Question/Answer (basic)**: Default format for most concepts. Question on the front,
+           concise explanation on the back.
+        2. **Cloze Deletion (cloze)**: For short, well-formed sentences where a single phrase
+           can be hidden with `[...]` and recalled.
+        3. **List**: Use only when the structure or comparison between a small number of items (2–4)
+           is the main concept.
+        4. **Multi**: Rare; only when a tightly related cluster of subfacts must be kept together
+           for the card to make sense and cannot be cleanly split.
 
         ## Your Task
 
         For each `candidate_context`:
-        1. Decide if it contains learning-worthy knowledge (not trivial, not already covered)
-        2. Check against `existing_cards` to avoid duplicates
-        3. If justified, create one or MORE atomic cards
-        4. Choose appropriate deck and tags
-        5. Provide confidence score and brief notes
+        1. Decide if it contains learning-worthy knowledge (not trivial, not already covered).
+        2. Check against `existing_cards` to avoid duplicates.
+        3. If justified, create one or MORE atomic cards following the guidelines above.
+        4. Choose an appropriate deck and tags.
+        5. Provide a confidence score and brief notes explaining why the card matters or how it
+           might be used.
+
+        Before finalizing a card, mentally check:
+        - Does it follow the Minimum Information Principle?
+        - Is the question clear, specific, and unambiguous?
+        - Can the card be understood independently of the original conversation?
+        - Is the wording optimized for fast recall (no unnecessary words)?
 
         ## Output Requirements
 
@@ -131,7 +213,7 @@ def build_codex_prompt(
         - NO explanatory text before or after the JSON
         - NO comments inside the JSON
         - START your response with `{` and END with `}`
-        - `card_style` should be: basic, cloze, or list
+        - `card_style` should be: basic, cloze, list, or multi
         - `confidence`: 0.0-1.0
 
         YOUR ENTIRE RESPONSE MUST BE VALID, PARSEABLE JSON.
