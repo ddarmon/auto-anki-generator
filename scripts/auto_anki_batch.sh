@@ -256,7 +256,8 @@ main() {
     generate_months
     local total_months=${#MONTHS[@]}
 
-    log_message "INFO" "Processing $total_months months from ${MONTHS[0]} to ${MONTHS[-1]}"
+    local last_index=$((total_months - 1))
+    log_message "INFO" "Processing $total_months months from ${MONTHS[0]} to ${MONTHS[$last_index]}"
 
     # Main processing loop
     while true; do
