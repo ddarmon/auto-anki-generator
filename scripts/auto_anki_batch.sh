@@ -135,6 +135,12 @@ check_usage_threshold() {
     local pct pace
     read -r pct pace <<< "$usage"
 
+    # Always wait if at rate limit (100%)
+    if [[ $pct -ge 100 ]]; then
+        log_message "INFO" "Rate limited: usage at $pct%"
+        return 1  # Need to wait
+    fi
+
     local threshold=$((pace + PACE_BUFFER))
 
     if [[ $pct -gt $threshold ]]; then
