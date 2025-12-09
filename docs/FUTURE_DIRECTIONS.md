@@ -9,6 +9,7 @@ organized by impact area and include implementation considerations.
 The system is now production-ready with major features implemented:
 
 ### ✅ Completed
+-   **Pluggable LLM backends**: Codex CLI + Claude Code, per-stage models
 -   **Semantic deduplication**: FAISS + SentenceTransformers with caching
 -   **Interactive review UI**: Shiny web app with keyboard shortcuts
 -   **AnkiConnect integration**: Direct import to Anki
@@ -1498,9 +1499,14 @@ for chunk in chunks:
     - Heuristics now optional (`--use-filter-heuristics`)
 2.  [x] Semantic deduplication with embeddings ✅
     - SentenceTransformers + FAISS-based vector cache
-3.  [ ] Enhanced scoring heuristics (now optional, via `--use-filter-heuristics`)
-4.  [ ] Quality validation & auto-fix
-5.  [ ] Configurable prompt templates
+3.  [x] Pluggable LLM backends ✅
+    - Abstract `LLMBackend` base class in `auto_anki/llm_backends/`
+    - Codex CLI and Claude Code implementations
+    - Per-backend, per-stage model configuration
+    - CLI: `--llm-backend`, `--llm-model-stage1/2`
+4.  [ ] Enhanced scoring heuristics (now optional, via `--use-filter-heuristics`)
+5.  [ ] Quality validation & auto-fix
+6.  [ ] Configurable prompt templates
 
 ### Phase 3: Integration (2-3 weeks)
 
@@ -1623,9 +1629,14 @@ intelligent learning companion. The highest-leverage improvements are now comple
 5.  ~~**Conversation-level processing**~~ ✅ **DONE** - LLM sees full learning journey
 6.  ~~**Parallel Stage 2**~~ ✅ **DONE** - 3 concurrent workers for card generation
 7.  ~~**Full context to Stage 1**~~ ✅ **DONE** - LLM judges quality directly
-8.  **Active learning** - Biggest remaining potential
+8.  ~~**Pluggable LLM backends**~~ ✅ **DONE** - Codex CLI + Claude Code
+9.  **Active learning** - Biggest remaining potential
 
 **Recent enhancements:**
+-   **Pluggable LLM backend abstraction** (`auto_anki/llm_backends/`)
+    -   Codex CLI and Claude Code support
+    -   Per-backend, per-stage model configuration
+    -   CLI: `--llm-backend`, `--llm-model-stage1/2`
 -   Heuristics now **optional** (`--use-filter-heuristics`, off by default)
 -   Stage 1 receives **full conversations** (no truncation)
 -   Stage 2 runs with **3 parallel workers** via ThreadPoolExecutor

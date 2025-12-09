@@ -1,6 +1,6 @@
 # Auto Anki Agent - Enhanced Usage Guide
 
-An agentic pipeline that automatically generates Anki flashcards from ChatGPT conversation exports using `codex exec` for intelligent card generation.
+An agentic pipeline that automatically generates Anki flashcards from ChatGPT conversation exports using pluggable LLM backends (Codex CLI, Claude Code) for intelligent card generation.
 
 ## What Works
 
@@ -64,8 +64,19 @@ python3 auto_anki_agent.py \
 ### Two-Stage Pipeline
 - `--two-stage`: Enable two-stage LLM pipeline (stage-1 filter + stage-2 generator, **default: enabled**)
 - `--single-stage`: Disable two-stage pipeline and use single-stage card generation
-- `--codex-model-stage1 MODEL`: Codex model for fast stage-1 filtering (default: `gpt-5.1`)
-- `--codex-model-stage2 MODEL`: Codex model for stage-2 card generation (default: `gpt-5.1`)
+- `--llm-model-stage1 MODEL`: Model for stage-1 filtering (default from config)
+- `--llm-model-stage2 MODEL`: Model for stage-2 card generation (default from config)
+
+### LLM Backend Selection
+- `--llm-backend {codex,claude-code}`: Select which agentic CLI to use (overrides config)
+- `--llm-model MODEL`: Override model for all stages
+- `--llm-extra-arg ARG`: Pass extra arguments to the LLM CLI (repeatable)
+
+**Deprecated** (still work, but prefer `--llm-*` equivalents):
+- `--codex-model-stage1` → use `--llm-model-stage1`
+- `--codex-model-stage2` → use `--llm-model-stage2`
+- `--codex-model` → use `--llm-model`
+- `--codex-extra-arg` → use `--llm-extra-arg`
 
 ### Deduplication
 - `--similarity-threshold FLOAT`: String-based similarity threshold for dedup (default: 0.82)
@@ -78,10 +89,8 @@ python3 auto_anki_agent.py \
 - `--min-score FLOAT`: Minimum aggregate score for conversations (only applies with `--use-filter-heuristics`)
 
 ### Other Options
-- `--dry-run`: Build prompts without calling codex
+- `--dry-run`: Build prompts without calling the LLM backend
 - `--verbose`: Print progress information
-- `--codex-model MODEL`: Override default codex model (falls back to `gpt-5.1` if unset)
-- `--codex-extra-arg ARG`: Passthrough args to codex (repeatable)
 
 ### Configuration via `auto_anki_config.json`
 
@@ -102,6 +111,8 @@ Supported keys mirror the CLI options:
 - `state_file`
 - `output_dir`
 - `cache_dir`
+- `llm_backend` - Which LLM CLI to use (`codex` or `claude-code`)
+- `llm_config` - Per-backend model and reasoning configuration
 
 Example `auto_anki_config.json`:
 
@@ -115,9 +126,31 @@ Example `auto_anki_config.json`:
   ],
   "state_file": ".auto_anki_agent_state.json",
   "output_dir": "auto_anki_runs",
-  "cache_dir": ".deck_cache"
+  "cache_dir": ".deck_cache",
+
+  "llm_backend": "codex",
+  "llm_config": {
+    "codex": {
+      "model": "gpt-5.1",
+      "reasoning_effort": "medium",
+      "reasoning_effort_stage1": "low",
+      "reasoning_effort_stage2": "high"
+    },
+    "claude-code": {
+      "model": "claude-sonnet-4-5-20250929",
+      "model_stage1": "claude-haiku-4-5-20251001",
+      "model_stage2": "claude-opus-4-5-20251101"
+    }
+  }
 }
 ```
+
+**LLM Backend Notes:**
+- The `llm_backend` key selects Codex (`codex`) or Claude Code (`claude-code`)
+- Per-backend configs can specify different models for Stage 1 (filtering) and Stage 2 (generation)
+- Use `model_stage1`/`model_stage2` to override the default `model` for specific stages
+- Codex supports `reasoning_effort` (`low`/`medium`/`high`); Claude Code ignores this setting
+- CLI flags (`--llm-backend`, `--llm-model-*`) override config file values
 
 **Important:** Anki must be running with AnkiConnect plugin installed (code: 2055492159) for card loading to work.
 
@@ -228,13 +261,29 @@ python3 auto_anki_agent.py \
   --verbose
 ```
 
-The two-stage pipeline is enabled by default:
-- **Stage 1**: Fast model (`gpt-5.1` with `model_reasoning_effort=low`) reviews full conversations
-  and selects the best candidates for card generation
-- **Stage 2**: Strong model (`gpt-5.1` with `model_reasoning_effort=high`) generates cards
-  with **3 concurrent workers** for parallel processing
+The two-stage pipeline is enabled by default and works with any LLM backend:
+
+**With Codex (default):**
+- **Stage 1**: `gpt-5.1` with `model_reasoning_effort=low` (fast filtering)
+- **Stage 2**: `gpt-5.1` with `model_reasoning_effort=high` (quality generation)
+
+**With Claude Code:**
+- **Stage 1**: `claude-haiku-4-5-20251001` (fast, cheap)
+- **Stage 2**: `claude-opus-4-5-20251101` (powerful)
+
+Both run **3 concurrent workers** for parallel Stage 2 processing.
 
 Use `--single-stage` to disable and use single-stage card generation instead.
+
+### Switching LLM Backends
+
+```bash
+# Use Claude Code instead of Codex
+python3 auto_anki_agent.py \
+  --llm-backend claude-code \
+  --unprocessed-only \
+  --verbose
+```
 
 ## Tips
 
@@ -289,14 +338,20 @@ rm .auto_anki_agent_state.json
         │
         ▼
 ┌──────────────────┐
-│  Deduplicate vs  │  ← HTML Deck Parser
+│  Deduplicate vs  │  ← AnkiConnect card loading
 │  Existing Cards  │  ← Annotate covered turns
 └───────┬──────────┘
         │
         ▼
 ┌──────────────────┐
-│  Stage 1 (Filter)│  ← Fast model (gpt-5.1 w/ low reasoning)
-│  Full context    │  ← LLM sees full conversations
+│  LLM Backend     │  ← Pluggable: Codex or Claude Code
+│  Selection       │  ← Config: auto_anki_config.json
+└───────┬──────────┘
+        │
+        ▼
+┌──────────────────┐
+│  Stage 1 (Filter)│  ← Codex: gpt-5.1 w/ low reasoning
+│  Full context    │  ← Claude: haiku-4.5 (fast)
 └───────┬──────────┘
         │ (keep only best conversations)
         ▼
@@ -305,7 +360,8 @@ rm .auto_anki_agent_state.json
 │  ┌─────────┐ ┌─────────┐ ┌─────────┐ │
 │  │ Worker 1│ │ Worker 2│ │ Worker 3│ │  ← 3 concurrent workers
 │  └─────────┘ └─────────┘ └─────────┘ │
-│  Strong model (gpt-5.1 w/ high)      │
+│  Codex: gpt-5.1 w/ high reasoning    │
+│  Claude: opus-4.5 (powerful)         │
 └───────┬──────────────────────────────┘
         │
         ▼
@@ -456,9 +512,10 @@ END_MONTH=1
 - [x] ~~Semantic deduplication with embeddings~~ ✅ **DONE!** (SentenceTransformers + FAISS vector cache)
 - [x] ~~Conversation-level processing~~ ✅ **DONE!** (LLM sees full learning journey)
 - [x] ~~Two-stage LLM pipeline~~ ✅ **DONE!** (Fast filter + slow generation)
-- [x] ~~Test suite~~ ✅ **DONE!** (97 tests covering core functions)
+- [x] ~~Test suite~~ ✅ **DONE!** (123 tests covering core functions)
 - [x] ~~Progress dashboard~~ ✅ **DONE!** (TUI with weekly stats + streak tracking)
 - [x] ~~Batch automation with usage throttling~~ ✅ **DONE!** (`scripts/auto_anki_batch.sh`)
+- [x] ~~Pluggable LLM backends~~ ✅ **DONE!** (Codex CLI + Claude Code)
 - [ ] Tag taxonomy management
 - [ ] Multi-deck routing logic with ML
 - [ ] Topic distribution visualization
@@ -490,6 +547,7 @@ uv run pytest tests/test_scoring.py -v
 | `test_parsing.py` | `parse_chat_entries`, `extract_turns`, `parse_chat_metadata` |
 | `test_date_filter.py` | `DateRangeFilter` class |
 | `test_dedup.py` | `is_duplicate_context` |
+| `test_llm_backends.py` | LLM backend abstraction (26 tests) |
 
 ### Dev Dependencies
 

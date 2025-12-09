@@ -7,8 +7,8 @@ work with the Auto Anki Agent codebase.
 
 **Auto Anki Agent** is an autonomous pipeline that generates
 high-quality Anki flashcards from ChatGPT conversation exports. It uses
-LLM-based decision-making (via `codex exec`) to intelligently select and
-format learning-worthy content as spaced repetition cards.
+LLM-based decision-making via **pluggable CLI backends** (Codex CLI, Claude Code)
+to intelligently select and format learning-worthy content as spaced repetition cards.
 
 ### Core Purpose
 
@@ -16,10 +16,14 @@ Transform casual learning conversations into actionable flashcards
 following Anki best practices (minimum information principle, atomic
 facts, clear context, etc.).
 
-### Key Innovation
+### Key Innovations
 
-Rather than using simple templates or rules, the system delegates card
-generation to an LLM "decision layer" that understands:
+1. **Pluggable LLM Backends**: The system abstracts LLM execution behind a
+   backend interface, allowing seamless switching between Codex CLI and
+   Claude Code (with different models for each stage).
+
+2. **LLM Decision Layer**: Rather than using simple templates or rules,
+   the system delegates card generation to an LLM that understands:
 
 -   What makes good flashcard material
 -   How to avoid duplicates
@@ -66,13 +70,17 @@ generation to an LLM "decision layer" that understands:
        │  └─ Full conversations with all turns
        └─ Cap total conversations (max_contexts)
 
-    5. TWO-STAGE CODEX PHASE
-       ├─ STAGE 1: LLM Filter (fast, GPT-5.1 Low)
+    5. TWO-STAGE LLM PHASE (via pluggable backend)
+       ├─ Backend selection from config: "codex" or "claude-code"
+       ├─ STAGE 1: LLM Filter (fast model)
+       │  ├─ Codex: gpt-5.1 with reasoning_effort=low
+       │  ├─ Claude Code: claude-haiku-4-5-20251001
        │  ├─ Receives FULL conversations (not truncated)
        │  ├─ LLM judges quality directly (no heuristic scores)
        │  └─ Decides: keep or skip each conversation
        ├─ STAGE 2: Card Generation (parallel, 3 workers)
-       │  ├─ Call `codex exec` with JSON contract
+       │  ├─ Codex: gpt-5.1 with reasoning_effort=high
+       │  ├─ Claude Code: claude-opus-4-5-20251101
        │  ├─ LLM sees full learning journey
        │  ├─ LLM decides: create cards / skip turns / note insights
        │  └─ Cards linked to specific turns via (conversation_id, turn_index)
@@ -160,6 +168,72 @@ Manages `.auto_anki_agent_state.json` for incremental processing.
 -   Records run history
 -   Enables `--unprocessed-only` mode
 -   Auto-migrates from v1 to v2 schema on first run
+
+### LLM Backend Abstraction
+
+The system uses a pluggable backend architecture to support multiple agentic CLI tools.
+
+#### `LLMBackend` (ABC)
+
+Abstract base class for LLM CLI tools. Each backend implements:
+
+``` python
+class LLMBackend(ABC):
+    @property
+    def name(self) -> str: ...  # "codex" or "claude-code"
+
+    def build_command(self, prompt, output_path, config) -> tuple[list[str], Optional[str]]:
+        """Build CLI command. Returns (cmd, stdin_input or None)."""
+
+    def extract_response(self, output_path, proc) -> str:
+        """Extract LLM response text from command output."""
+```
+
+#### `LLMConfig` (dataclass)
+
+Backend-agnostic configuration:
+
+``` python
+@dataclass
+class LLMConfig:
+    model: Optional[str] = None           # e.g., "gpt-5.1" or "claude-opus-4-5-20251101"
+    reasoning_effort: Optional[str] = None  # "low"/"medium"/"high" (Codex only)
+    extra_args: List[str] = []
+    timeout_ms: int = 120000
+```
+
+#### Available Backends
+
+| Backend | CLI | Input Method | Output Method | Reasoning Support |
+|---------|-----|--------------|---------------|-------------------|
+| `codex` | `codex exec` | stdin (`-`) | `--output-last-message` file | Yes (`-c model_reasoning_effort=X`) |
+| `claude-code` | `claude --print` | `-p "prompt"` flag | stdout | No (ignored) |
+
+#### Configuration (`auto_anki_config.json`)
+
+``` json
+{
+  "llm_backend": "codex",
+  "llm_config": {
+    "codex": {
+      "model": "gpt-5.1",
+      "model_stage1": null,
+      "model_stage2": null,
+      "reasoning_effort": "medium",
+      "reasoning_effort_stage1": "low",
+      "reasoning_effort_stage2": "high"
+    },
+    "claude-code": {
+      "model": "claude-sonnet-4-5-20250929",
+      "model_stage1": "claude-haiku-4-5-20251001",
+      "model_stage2": "claude-opus-4-5-20251101"
+    }
+  }
+}
+```
+
+Stage-specific models allow using fast/cheap models for filtering (Stage 1) and
+powerful models for card generation (Stage 2).
 
 ### Key Functions
 
@@ -269,14 +343,20 @@ Generates human-readable card preview.
     │   ├── dedup.py                 # String + semantic dedup (FAISS/embeddings)
     │   ├── codex.py                 # Prompt builders, two-stage pipeline, parsing
     │   ├── state.py                 # StateTracker, run directory helpers
-    │   └── progress.py              # TUI progress dashboard (`auto-anki-progress`)
+    │   ├── progress.py              # TUI progress dashboard (`auto-anki-progress`)
+    │   └── llm_backends/            # Pluggable LLM backend abstraction
+    │       ├── __init__.py          # Registry: get_backend(), list_backends()
+    │       ├── base.py              # LLMBackend ABC, LLMConfig, LLMResponse
+    │       ├── codex.py             # CodexBackend (stdin input, file output)
+    │       └── claude_code.py       # ClaudeCodeBackend (-p flag, stdout output)
     ├── tests/                       # Test suite (pytest)
     │   ├── conftest.py              # Shared fixtures
     │   ├── test_scoring.py          # Tests for detect_signals, extract_key_terms
     │   ├── test_normalization.py    # Tests for normalize_text, quick_similarity
     │   ├── test_parsing.py          # Tests for parse_chat_entries, extract_turns
     │   ├── test_date_filter.py      # Tests for DateRangeFilter
-    │   └── test_dedup.py            # Tests for is_duplicate_context
+    │   ├── test_dedup.py            # Tests for is_duplicate_context
+    │   └── test_llm_backends.py     # Tests for LLM backend abstraction
     ├── anki_review_ui.py            # Interactive review UI (Shiny app, 1050+ lines)
     ├── anki_connect.py              # AnkiConnect HTTP client (437 lines)
     ├── launch_ui.sh                 # Launch script for review UI
@@ -316,12 +396,13 @@ Generates human-readable card preview.
 **What to read first:**
 
 1.  This file (CLAUDE.md) - architecture overview
-2.  `auto_anki/cards.py` - `Card`, AnkiConnect card loading
-3.  `auto_anki/contexts.py` - `Conversation`, `ChatTurn`, `harvest_conversations()`
-4.  `auto_anki/dedup.py` - `SemanticCardIndex`, `prune_conversations()`
-5.  `auto_anki/codex.py` - `build_conversation_prompt()`, `run_codex_pipeline()`
-6.  `auto_anki/state.py` - `StateTracker`, state migration, `ensure_run_dir()`
-7.  `auto_anki/progress.py` - TUI progress dashboard, weekly stats, streak tracking
+2.  `auto_anki/llm_backends/` - **LLM backend abstraction** (Codex, Claude Code)
+3.  `auto_anki/cards.py` - `Card`, AnkiConnect card loading
+4.  `auto_anki/contexts.py` - `Conversation`, `ChatTurn`, `harvest_conversations()`
+5.  `auto_anki/dedup.py` - `SemanticCardIndex`, `prune_conversations()`
+6.  `auto_anki/codex.py` - `build_conversation_prompt()`, `run_codex_pipeline()`
+7.  `auto_anki/state.py` - `StateTracker`, state migration, `ensure_run_dir()`
+8.  `auto_anki/progress.py` - TUI progress dashboard, weekly stats, streak tracking
 
 **Key configuration points (via CLI defaults):**
 
@@ -545,7 +626,16 @@ python3 auto_anki_agent.py \
   --date-range 2025-11 \
   --max-contexts 50 \
   --contexts-per-run 10 \
-  --codex-model gpt-5-codex
+  --llm-model gpt-5-codex
+```
+
+**Switch to Claude Code backend:**
+
+``` bash
+python3 auto_anki_agent.py \
+  --unprocessed-only \
+  --llm-backend claude-code \
+  --verbose
 ```
 
 **View processing progress:**
@@ -571,11 +661,19 @@ This script:
 
 ### Important Flags
 
--   `--dry-run`: Build prompts but don't call codex (FREE)
+**Core:**
+-   `--dry-run`: Build prompts but don't call LLM (FREE)
 -   `--verbose`: Show progress and decisions (HELPFUL)
 -   `--unprocessed-only`: Skip processed files (INCREMENTAL)
 -   `--date-range`: Time-based filtering (FOCUSED)
 -   `--output-format {json,markdown,both}`: Output preference
+
+**LLM Backend:**
+-   `--llm-backend {codex,claude-code}`: Select LLM backend (overrides config)
+-   `--llm-model MODEL`: Override model for all stages
+-   `--llm-model-stage1 MODEL`: Model for Stage 1 filtering
+-   `--llm-model-stage2 MODEL`: Model for Stage 2 card generation
+-   `--llm-extra-arg ARG`: Pass extra args to LLM CLI (repeatable)
 
 ## Integration Points
 
@@ -609,14 +707,14 @@ This script:
 -   Extract Front/Back fields
 -   Cache with configurable TTL (default: 5 minutes)
 
-### Output: Codex Exec
+### Output: LLM Backend Execution
 
-**Interface:**
+**Interface** (via `auto_anki/llm_backends/`):
 
--   Subprocess call to `codex exec`
--   Stdin: Prompt text
--   Stdout: JSON response
--   Args: `--model`, `--reasoning-effort`, custom args
+-   Backend-specific subprocess calls (Codex, Claude Code)
+-   Codex: stdin input, file output via `--output-last-message`
+-   Claude Code: `-p "prompt"` flag, stdout output
+-   Shared: `--model`, custom args via `--llm-extra-arg`
 
 **Response schema (conversation-aware):**
 
@@ -874,6 +972,9 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 -   `StateTracker` - Incremental processing state (v2 schema)
 -   `WeeklyStats` - Progress stats for a single week (progress.py)
 -   `ProgressSummary` - Overall progress summary (progress.py)
+-   `LLMBackend` - Abstract base class for LLM CLI backends
+-   `LLMConfig` - Backend-agnostic LLM configuration
+-   `LLMResponse` - Standardized response from any backend
 
 ### Key Constants
 
@@ -909,15 +1010,20 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 
 ------------------------------------------------------------------------
 
-**Last updated**: 2025-12-07
+**Last updated**: 2025-12-08
 
 **Project status**: Production-ready with conversation-level processing,
 semantic deduplication, two-stage pipeline, parallel execution, interactive review UI,
-and TUI progress dashboard.
+TUI progress dashboard, and **pluggable LLM backends**.
 
 **Current version**: Modular Python package with CLI entrypoints (`auto-anki`, `auto-anki-progress`)
 
 **Recent additions**:
+-   **Pluggable LLM backend abstraction** (`auto_anki/llm_backends/`)
+    -   Support for Codex CLI and Claude Code
+    -   Per-backend, per-stage model configuration
+    -   CLI: `--llm-backend`, `--llm-model`, `--llm-model-stage1/2`
+    -   Config: `llm_backend` and `llm_config` in `auto_anki_config.json`
 -   TUI progress dashboard (`auto-anki-progress`) with weekly stats, streak tracking
 -   Heuristics OFF by default - LLM-only filtering via Stage 1
 -   Stage 1 receives full conversations (not truncated)

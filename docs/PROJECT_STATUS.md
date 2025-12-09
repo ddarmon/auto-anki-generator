@@ -1,6 +1,6 @@
 # Auto Anki Agent - Project Status
 
-**Date**: 2025-12-07
+**Date**: 2025-12-08
 **Status**: ✅ Production Ready
 
 ## Executive Summary
@@ -12,6 +12,7 @@ The Auto Anki Agent project now includes a **complete end-to-end workflow** for 
 3. ✅ **Direct Anki integration** via AnkiConnect (30-60x faster than manual import)
 4. ✅ **Advanced filtering and bulk operations**
 5. ✅ **Data-driven improvement** via feedback tracking
+6. ✅ **Pluggable LLM backends** - Codex CLI and Claude Code support
 
 ## Complete Workflow
 
@@ -42,6 +43,7 @@ Start studying! 🎓
 **What it does:**
 - Harvests ChatGPT conversation exports
 - Deduplicates against existing Anki cards
+- **Pluggable LLM backends**: Codex CLI or Claude Code
 - Two-stage LLM pipeline: fast filter → parallel card generation
 - Uses LLM to generate high-quality flashcards
 - Outputs proposed cards to JSON and Markdown
@@ -57,6 +59,7 @@ Start studying! 🎓
   - `auto_anki/codex.py` – prompt building, two-stage pipeline, parsing
   - `auto_anki/state.py` – state tracking, run directories
   - `auto_anki/cli.py` – console entrypoint (`auto-anki`)
+  - `auto_anki/llm_backends/` – **pluggable LLM backend abstraction**
 
 **Key Features:**
 - Date range filtering
@@ -191,6 +194,8 @@ Start studying! 🎓
 ### Features
 
 **Card Generation:**
+- ✅ **Pluggable LLM backends** - Codex CLI and Claude Code
+- ✅ Per-backend, per-stage model configuration
 - ✅ Two-stage LLM pipeline (default): Stage 1 filter → Stage 2 generation
 - ✅ Parallel Stage 2 execution (3 concurrent workers)
 - ✅ Full conversations sent to Stage 1 (LLM judges quality directly)
@@ -362,9 +367,11 @@ $ ./launch_ui.sh
    - For best results: `uv pip install -e ".[semantic]"`
    - Override: `--dedup-method {string,semantic,hybrid}`
 
-4. ~~**Single LLM model**~~ ✅ **TWO-STAGE PIPELINE** - Fast filter + parallel card generation
-   - Stage 1: `gpt-5.1` with low reasoning effort
-   - Stage 2: `gpt-5.1` with high reasoning effort (3 parallel workers)
+4. ~~**Single LLM model**~~ ✅ **PLUGGABLE BACKENDS + TWO-STAGE PIPELINE**
+   - Backends: Codex CLI, Claude Code (extensible)
+   - Codex: `gpt-5.1` with configurable reasoning effort
+   - Claude: haiku-4.5 (Stage 1) → opus-4.5 (Stage 2)
+   - 3 parallel workers for Stage 2
 
 5. **Manual quality assessment** - User reviews all cards
    - Future: Active learning, quality prediction
@@ -406,7 +413,14 @@ These are documented in FUTURE_DIRECTIONS.md with detailed proposals.
    - Weekly stats, streak tracking, cumulative progress
    - JSON output mode for scripting
 
-4. **Cloze Card Support**
+4. ~~**Pluggable LLM Backends**~~ ✅ **DONE!**
+   - Abstract base class `LLMBackend` in `auto_anki/llm_backends/`
+   - Implemented: Codex CLI, Claude Code
+   - Per-backend, per-stage model configuration
+   - CLI: `--llm-backend`, `--llm-model-stage1/2`
+   - Config: `llm_backend` and `llm_config` in `auto_anki_config.json`
+
+5. **Cloze Card Support**
    - Detect cloze-worthy content
    - Generate cloze deletion cards
    - Support Anki cloze syntax
@@ -457,14 +471,15 @@ The Auto Anki Agent project is **production-ready** and **feature-complete** for
 ✅ Advanced filtering and bulk operations
 ✅ Data-driven feedback for continuous improvement
 ✅ Progress tracking with TUI dashboard
+✅ **Pluggable LLM backends** (Codex CLI, Claude Code)
 
 **The project is ready for daily use!** 🚀
 
 ---
 
 **Status**: Production Ready ✅
-**Version**: 2.1 (with parallel Stage 2)
-**Last Updated**: 2025-12-07
+**Version**: 2.2 (with pluggable LLM backends)
+**Last Updated**: 2025-12-08
 **Documentation**: Complete ✅
-**Testing**: Passed ✅
+**Testing**: Passed ✅ (123 tests)
 **Ready for**: Daily use, further enhancements

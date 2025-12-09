@@ -26,19 +26,35 @@ You can avoid repeating common CLI flags by creating a JSON config:
   - `./auto_anki_config.json` in the current working directory
   - `~/.auto_anki_config.json` in your home directory
 - CLI flags still override any values set in the config file.
-- Relative paths in the config are resolved relative to the config file’s directory.
+- Relative paths in the config are resolved relative to the config file's directory.
 
 Example `auto_anki_config.json` next to this repo:
 
 ```json
 {
   "chat_root": "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/chatgpt",
-  "deck_glob": "*.html",
+  "decks": ["Research Learning", "Technology Learning"],
   "state_file": ".auto_anki_agent_state.json",
   "output_dir": "auto_anki_runs",
-  "cache_dir": ".deck_cache"
+  "cache_dir": ".deck_cache",
+
+  "llm_backend": "codex",
+  "llm_config": {
+    "codex": {
+      "model": "gpt-5.1",
+      "reasoning_effort_stage1": "low",
+      "reasoning_effort_stage2": "high"
+    },
+    "claude-code": {
+      "model_stage1": "claude-haiku-4-5-20251001",
+      "model_stage2": "claude-opus-4-5-20251101"
+    }
+  }
 }
 ```
+
+The `llm_backend` key selects which agentic CLI tool to use (`codex` or `claude-code`).
+Use `--llm-backend` on the CLI to override.
 
 ## Installation (Quick)
 
@@ -101,4 +117,17 @@ python3 auto_anki_agent.py --dedup-method semantic --verbose
 
 # String only (no embeddings)
 python3 auto_anki_agent.py --dedup-method string --verbose
+```
+
+**Switching LLM backends:**
+
+``` bash
+# Use Codex (default)
+uv run auto-anki --unprocessed-only --verbose
+
+# Use Claude Code instead
+uv run auto-anki --llm-backend claude-code --verbose
+
+# Override model for a specific run
+uv run auto-anki --llm-model gpt-5.1 --verbose
 ```

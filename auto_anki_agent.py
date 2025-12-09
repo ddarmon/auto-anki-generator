@@ -466,7 +466,7 @@ def _apply_llm_config(args: argparse.Namespace, config: Dict[str, Any]) -> None:
     # Default models per backend
     default_models = {
         "codex": "gpt-5.1",
-        "claude-code": "claude-sonnet-4-20250514",
+        "claude-code": "claude-sonnet-4-5-20250929",
     }
 
     # Resolve model settings with proper fallback chain

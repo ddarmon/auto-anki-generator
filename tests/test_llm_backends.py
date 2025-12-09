@@ -187,14 +187,14 @@ class TestClaudeCodeBackend:
     def test_build_command_with_model(self):
         """ClaudeCodeBackend should include model flag when specified."""
         backend = ClaudeCodeBackend()
-        config = LLMConfig(model="claude-opus-4-5-20250514")
+        config = LLMConfig(model="claude-opus-4-5-20251101")
         output_path = Path("/tmp/output.json")
 
         cmd, _ = backend.build_command("test", output_path, config)
 
         assert "--model" in cmd
         model_idx = cmd.index("--model")
-        assert cmd[model_idx + 1] == "claude-opus-4-5-20250514"
+        assert cmd[model_idx + 1] == "claude-opus-4-5-20251101"
 
     def test_build_command_ignores_reasoning_effort(self):
         """ClaudeCodeBackend should ignore reasoning_effort (not supported)."""

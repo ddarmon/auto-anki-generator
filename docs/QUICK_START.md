@@ -53,7 +53,16 @@ python3 auto_anki_agent.py --date-range 2025-10 --max-contexts 5 --dry-run
 ```bash
 python3 auto_anki_agent.py \
   --unprocessed-only \
-  --codex-model gpt-5.1 \
+  --llm-model gpt-5.1 \
+  --verbose
+```
+
+### Switch to Claude Code Backend
+
+```bash
+python3 auto_anki_agent.py \
+  --llm-backend claude-code \
+  --unprocessed-only \
   --verbose
 ```
 
@@ -89,6 +98,20 @@ Minimal example:
 {
   "chat_root": "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/chatgpt",
   "decks": ["Research Learning", "Technology Learning"]
+}
+```
+
+With LLM backend configuration:
+
+```json
+{
+  "chat_root": "...",
+  "decks": ["..."],
+  "llm_backend": "codex",
+  "llm_config": {
+    "codex": { "model": "gpt-5.1" },
+    "claude-code": { "model_stage2": "claude-opus-4-5-20251101" }
+  }
 }
 ```
 
@@ -137,14 +160,16 @@ collections/
 │   ├── codex.py                # Prompt builders
 │   ├── dedup.py                # Deduplication
 │   ├── state.py                # State tracking (v2 schema)
-│   └── progress.py             # TUI progress dashboard
+│   ├── progress.py             # TUI progress dashboard
+│   └── llm_backends/           # Pluggable LLM backend abstraction
+│       ├── base.py             # LLMBackend ABC, LLMConfig
+│       ├── codex.py            # Codex CLI backend
+│       └── claude_code.py      # Claude Code backend
+├── auto_anki_config.json       # Config (optional, includes llm_backend)
 ├── README_AUTO_ANKI.md         # Full documentation
 ├── QUICK_START.md              # This file
 ├── .auto_anki_agent_state.json # Processing state (v2 with seen_conversations)
-├── Research_Learning.html      # Existing cards
-├── Technology_Learning.html    # Existing cards
-├── Moody_s_Learning.html       # Existing cards
-└── auto_anki_runs/            # Generated outputs
+└── auto_anki_runs/             # Generated outputs
     ├── proposed_cards_2025-11-08.md
     └── run-20251108-125440/
         ├── all_proposed_cards.json
