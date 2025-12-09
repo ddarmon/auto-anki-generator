@@ -17,6 +17,10 @@
 
 set -o pipefail
 
+# Preserve original stdout on FD 3 so we can stream live output from within
+# command substitutions (used below when capturing function output).
+exec 3>&1
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -83,7 +87,7 @@ log_message() {
     local message="$2"
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE" >&3
 }
 
 # Get codex usage info from the usage script
@@ -192,22 +196,24 @@ generate_months() {
 run_auto_anki() {
     local month="$1"
     local retry_count=0
-    local output exit_code
+    local output_file output exit_code
 
     while [[ $retry_count -lt $MAX_RETRIES ]]; do
         log_message "INFO" "Running auto-anki for $month (attempt $((retry_count + 1))/$MAX_RETRIES)"
 
         cd "$PROJECT_DIR" || exit 1
 
-        # Capture output and exit code
-        output=$(uv run auto-anki \
+        # Stream output live to both the terminal and the log file while
+        # also capturing it for post-run inspection. We send the live stream
+        # to FD 3 so it bypasses any surrounding command substitutions.
+        output_file=$(mktemp)
+        uv run auto-anki \
             --date-range "$month" \
             --unprocessed-only \
-            --verbose 2>&1)
-        exit_code=$?
-
-        # Log output to file
-        echo "$output" >> "$LOG_FILE"
+            --verbose 2>&1 | tee -a "$LOG_FILE" | tee "$output_file" >&3
+        exit_code=${PIPESTATUS[0]}
+        output=$(cat "$output_file")
+        rm -f "$output_file"
 
         if [[ $exit_code -eq 0 ]]; then
             echo "$output"
@@ -215,7 +221,15 @@ run_auto_anki() {
         fi
 
         # Check for specific errors
-        if echo "$output" | grep -q "Could not connect to Anki"; then
+        # Prefer a stable sentinel from the CLI; fall back to older wording.
+        if echo "$output" | grep -q "ANKI_CONNECT_ERROR"; then
+            log_message "ERROR" "Anki is not running or AnkiConnect is unreachable."
+            log_message "INFO" "Press Enter to retry after starting Anki (with AnkiConnect enabled)..."
+            read -r
+            continue
+        fi
+
+        if echo "$output" | grep -Eq "Could not connect to Anki|Cannot connect to Anki"; then
             log_message "ERROR" "Anki is not running. Please start Anki with AnkiConnect."
             log_message "INFO" "Press Enter to retry after starting Anki..."
             read -r
