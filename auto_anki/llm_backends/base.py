@@ -22,7 +22,7 @@ class LLMConfig:
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None  # low/medium/high (Codex only)
     extra_args: List[str] = field(default_factory=list)
-    timeout_ms: int = 120000  # 2 minutes default
+    timeout_ms: int = 600000  # 10 minutes default
 
 
 @dataclass

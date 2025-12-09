@@ -109,7 +109,7 @@ class Conversation:
     source_title: Optional[str]
     source_url: Optional[str]
     turns: List[ChatTurn]              # Ordered list of turns
-    total_char_count: int              # Sum of all assistant responses
+    total_char_count: int              # Sum of all user prompts + assistant responses
     aggregate_score: float             # Combined score across turns
     aggregate_signals: Dict[str, Any]  # Merged signals
     key_topics: List[str]              # Extracted from all turns
@@ -399,6 +399,12 @@ def detect_conversation_signals(turns: List[ChatTurn]) -> Tuple[float, Dict[str,
     total_score = sum(t.score for t in turns)
     avg_score = total_score / len(turns)
 
+    # Detect mega-pastes (users pasting entire HTML docs, code files, etc.)
+    # These typically indicate "explain this doc" requests with limited flashcard value
+    MEGA_PASTE_THRESHOLD = 20000  # 20KB+ is likely a pasted document
+    max_user_prompt_len = max(len(t.user_prompt) for t in turns) if turns else 0
+    has_mega_paste = max_user_prompt_len > MEGA_PASTE_THRESHOLD
+
     # Merge signals
     aggregate_signals: Dict[str, Any] = {
         "turn_count": len(turns),
@@ -409,6 +415,8 @@ def detect_conversation_signals(turns: List[ChatTurn]) -> Tuple[float, Dict[str,
         "code_turns": sum(1 for t in turns if t.signals.get("code_blocks", 0) > 0),
         "total_bullets": sum(t.signals.get("bullet_count", 0) for t in turns),
         "total_headings": sum(t.signals.get("heading_count", 0) for t in turns),
+        "has_mega_paste": has_mega_paste,
+        "max_user_prompt_chars": max_user_prompt_len,
     }
 
     # Detect follow-up patterns (indicates user struggled/needed clarification)
@@ -522,8 +530,11 @@ def build_conversation(
         all_terms.extend(turn.key_terms)
     key_topics = extract_key_terms(" ".join(all_terms), limit=8)
 
-    # Compute total character count
-    total_char_count = sum(t.assistant_char_count for t in chat_turns)
+    # Compute total character count (user prompts + assistant responses)
+    # Including user prompts catches mega-pastes (users pasting entire HTML docs, etc.)
+    total_char_count = sum(
+        len(t.user_prompt) + t.assistant_char_count for t in chat_turns
+    )
 
     return Conversation(
         conversation_id=conversation_id,
@@ -636,7 +647,9 @@ def split_conversation_by_topic(
 
         # Recompute aggregates for sub-conversation
         agg_score, agg_signals = detect_conversation_signals(reindexed_turns)
-        total_chars = sum(t.assistant_char_count for t in reindexed_turns)
+        total_chars = sum(
+            len(t.user_prompt) + t.assistant_char_count for t in reindexed_turns
+        )
 
         # Extract key topics for this sub-conversation
         all_terms = []

@@ -24,6 +24,36 @@ from auto_anki.contexts import ChatTurn, Conversation
 from auto_anki.llm_backends import LLMConfig, get_backend, run_backend
 
 
+# Maximum characters for user prompts in LLM prompts.
+# Prompts longer than this are truncated to prevent context window overflow.
+# This handles cases where users paste entire HTML documents, PDFs, etc.
+MAX_USER_PROMPT_CHARS = 4000
+
+
+def truncate_mega_prompt(text: str, max_chars: int = MAX_USER_PROMPT_CHARS) -> str:
+    """Truncate mega-prompts while preserving context.
+
+    When users paste large documents (HTML, code, etc.), we truncate to:
+    - First ~75% of allowed chars (to show what was pasted)
+    - A truncation notice with character count
+    - Last ~25% of allowed chars (to show the end/question)
+
+    This preserves enough context for the LLM to judge quality while
+    preventing context window overflow.
+    """
+    if len(text) <= max_chars:
+        return text
+
+    # Calculate split points
+    head_chars = int(max_chars * 0.70)
+    tail_chars = int(max_chars * 0.20)
+    removed = len(text) - head_chars - tail_chars
+
+    truncation_notice = f"\n\n[TRUNCATED: {removed:,} characters removed]\n\n"
+
+    return text[:head_chars] + truncation_notice + text[-tail_chars:]
+
+
 def build_codex_prompt(
     cards: List[Card],
     contexts: List[ChatTurn],
@@ -844,6 +874,9 @@ def build_conversation_prompt(
     - See follow-up questions that indicate confusion
     - Avoid cards from exchanges that were later corrected
     - Create coherent card sets that build on each other
+
+    User prompts are truncated to MAX_USER_PROMPT_CHARS to prevent context
+    window overflow from mega-pastes (users pasting entire HTML docs, etc.).
     """
     cards_payload = [
         {
@@ -867,7 +900,7 @@ def build_conversation_prompt(
                     "turn_index": turn.turn_index,
                     "context_id": turn.context_id,
                     "user_timestamp": turn.user_timestamp,
-                    "user_prompt": turn.user_prompt,
+                    "user_prompt": truncate_mega_prompt(turn.user_prompt),
                     "assistant_answer": turn.assistant_answer,
                     "score": round(turn.score, 3),
                     "signals": turn.signals,
@@ -1088,6 +1121,9 @@ def build_conversation_filter_prompt(
     Stage 1 decides which conversations are worth sending to the more
     expensive card-generation stage. It receives full conversation content
     to make accurate quality decisions.
+
+    User prompts are truncated to MAX_USER_PROMPT_CHARS to prevent context
+    window overflow from mega-pastes (users pasting entire HTML docs, etc.).
     """
     conversations_payload = [
         {
@@ -1096,10 +1132,11 @@ def build_conversation_filter_prompt(
             "key_topics": conv.key_topics,
             "turn_count": len(conv.turns),
             # Full conversation content for accurate quality assessment
+            # User prompts are truncated to prevent context overflow
             "turns": [
                 {
                     "turn_index": turn.turn_index,
-                    "user_prompt": turn.user_prompt,
+                    "user_prompt": truncate_mega_prompt(turn.user_prompt),
                     "assistant_response": turn.assistant_answer,
                 }
                 for turn in conv.turns

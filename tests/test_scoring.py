@@ -1,7 +1,13 @@
 """Tests for scoring functions in auto_anki/contexts.py."""
 
 import pytest
-from auto_anki.contexts import detect_signals, extract_key_terms, extract_key_points
+from auto_anki.contexts import (
+    detect_signals,
+    detect_conversation_signals,
+    extract_key_terms,
+    extract_key_points,
+    ChatTurn,
+)
 
 
 class TestDetectSignals:
@@ -208,3 +214,91 @@ class TestExtractKeyPoints:
         text = "This is just a plain paragraph without any structure."
         points = extract_key_points(text)
         assert len(points) == 0
+
+
+class TestDetectConversationSignals:
+    """Tests for the detect_conversation_signals function."""
+
+    def _make_turn(self, user_prompt: str, assistant_answer: str, turn_index: int = 0) -> ChatTurn:
+        """Helper to create a ChatTurn for testing."""
+        return ChatTurn(
+            context_id=f"test_{turn_index}",
+            turn_index=turn_index,
+            conversation_id="test_conv",
+            source_path="/test/path.md",
+            source_title="Test",
+            source_url=None,
+            user_timestamp=None,
+            user_prompt=user_prompt,
+            assistant_answer=assistant_answer,
+            assistant_char_count=len(assistant_answer),
+            score=1.0,
+            signals={"question_like": True},
+            key_terms=["test"],
+            key_points=[],
+        )
+
+    def test_empty_turns(self):
+        """Empty turns list should return zero score and empty signals."""
+        score, signals = detect_conversation_signals([])
+        assert score == 0.0
+        assert signals == {}
+
+    def test_basic_signals(self):
+        """Basic conversation should have standard signals."""
+        turns = [
+            self._make_turn("What is Python?", "Python is a programming language."),
+        ]
+        score, signals = detect_conversation_signals(turns)
+
+        assert "turn_count" in signals
+        assert signals["turn_count"] == 1
+        assert "has_mega_paste" in signals
+        assert signals["has_mega_paste"] is False
+
+    def test_mega_paste_detection(self):
+        """Mega-paste (>20KB user prompt) should be detected."""
+        mega_prompt = "x" * 25000  # 25KB
+        turns = [
+            self._make_turn(mega_prompt, "Here's my explanation of that document."),
+        ]
+        score, signals = detect_conversation_signals(turns)
+
+        assert signals["has_mega_paste"] is True
+        assert signals["max_user_prompt_chars"] == 25000
+
+    def test_no_mega_paste_under_threshold(self):
+        """Prompts under 20KB should not be flagged as mega-paste."""
+        large_but_ok_prompt = "x" * 19000  # 19KB
+        turns = [
+            self._make_turn(large_but_ok_prompt, "Response."),
+        ]
+        score, signals = detect_conversation_signals(turns)
+
+        assert signals["has_mega_paste"] is False
+        assert signals["max_user_prompt_chars"] == 19000
+
+    def test_mega_paste_any_turn(self):
+        """Mega-paste should be detected even if only one turn has it."""
+        turns = [
+            self._make_turn("Short question", "Short answer", turn_index=0),
+            self._make_turn("x" * 30000, "Explanation", turn_index=1),  # Mega-paste
+            self._make_turn("Follow-up", "More details", turn_index=2),
+        ]
+        score, signals = detect_conversation_signals(turns)
+
+        assert signals["has_mega_paste"] is True
+        assert signals["max_user_prompt_chars"] == 30000
+
+    def test_multi_turn_aggregation(self):
+        """Multiple turns should aggregate scores correctly."""
+        turns = [
+            self._make_turn("Q1", "A1", turn_index=0),
+            self._make_turn("Q2", "A2", turn_index=1),
+            self._make_turn("Q3", "A3", turn_index=2),
+        ]
+        score, signals = detect_conversation_signals(turns)
+
+        assert signals["turn_count"] == 3
+        assert signals["total_score"] == 3.0  # Each turn has score 1.0
+        assert signals["avg_score"] == 1.0
