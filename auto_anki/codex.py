@@ -1,6 +1,9 @@
 """
 Codex / LLM integration: prompt builders, two-stage pipeline, and
 response parsing helpers.
+
+This module provides the interface for executing prompts via different
+LLM backends (Codex, Claude Code, etc.) and processing their responses.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from json_repair import repair_json
 
 from auto_anki.cards import Card
 from auto_anki.contexts import ChatTurn, Conversation
+from auto_anki.llm_backends import LLMConfig, get_backend, run_backend
 
 
 def build_codex_prompt(
@@ -302,36 +306,70 @@ def run_codex_exec(
     reasoning_override: Optional[str] = None,
     label: str = "",
 ) -> str:
-    prompt_path = run_dir / f"prompt{label}_chunk_{chunk_idx:02d}.txt"
-    prompt_path.write_text(prompt)
-    last_msg_path = run_dir / f"codex{label}_response_chunk_{chunk_idx:02d}.json"
+    """Execute a prompt via the configured LLM backend.
 
-    # Build command
-    cmd = ["codex", "exec", "-", "--skip-git-repo-check"]
-    model = model_override or args.codex_model or "gpt-5.1"
-    cmd.extend(["--model", model])
-    reasoning = reasoning_override or args.model_reasoning_effort
-    if reasoning:
-        cmd.extend(["-c", f"model_reasoning_effort={reasoning}"])
+    This function provides backward compatibility while using the new
+    backend abstraction layer internally.
 
+    Args:
+        prompt: The prompt text to send to the LLM.
+        chunk_idx: Chunk index for labeling artifacts.
+        run_dir: Directory for saving run artifacts.
+        args: CLI arguments namespace.
+        model_override: Optional model override.
+        reasoning_override: Optional reasoning effort override.
+        label: Optional label for artifact filenames.
+
+    Returns:
+        The raw response text from the LLM.
+
+    Raises:
+        RuntimeError: If the LLM execution fails.
+    """
+    # Get the backend (default to codex for backward compatibility)
+    backend_name = getattr(args, "llm_backend", None) or "codex"
+    backend = get_backend(backend_name)
+
+    # Build config from args, allowing overrides
+    # For codex: use codex_model; for claude-code: use llm_model
+    if backend_name == "codex":
+        default_model = getattr(args, "codex_model", None) or "gpt-5.1"
+    else:
+        default_model = getattr(args, "llm_model", None)
+
+    model = model_override or default_model
+    reasoning = reasoning_override or getattr(args, "model_reasoning_effort", None)
+
+    # Collect extra args
+    extra_args: List[str] = []
     for extra in getattr(args, "codex_extra_arg", []) or []:
         if extra:
-            cmd.extend(shlex.split(extra))
-    cmd.extend(["--output-last-message", str(last_msg_path)])
-    proc = subprocess.run(
-        cmd,
-        input=prompt,
-        text=True,
-        capture_output=True,
-        cwd=os.getcwd(),
+            extra_args.extend(shlex.split(extra))
+    for extra in getattr(args, "llm_extra_arg", []) or []:
+        if extra:
+            extra_args.extend(shlex.split(extra))
+
+    config = LLMConfig(
+        model=model,
+        reasoning_effort=reasoning,
+        extra_args=extra_args,
     )
-    (run_dir / f"codex{label}_stdout_chunk_{chunk_idx:02d}.log").write_text(proc.stdout)
-    (run_dir / f"codex{label}_stderr_chunk_{chunk_idx:02d}.log").write_text(proc.stderr)
-    if proc.returncode != 0:
+
+    # Execute via backend
+    response = run_backend(
+        backend,
+        prompt,
+        config,
+        run_dir,
+        label=f"{label}_chunk_{chunk_idx:02d}",
+    )
+
+    if not response.success:
         raise RuntimeError(
-            f"codex exec failed for chunk {chunk_idx} with exit code {proc.returncode}"
+            f"{backend.name} failed for chunk {chunk_idx}: {response.error_message}"
         )
-    return last_msg_path.read_text().strip()
+
+    return response.raw_text
 
 
 def parse_codex_response_robust(

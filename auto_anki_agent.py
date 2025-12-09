@@ -52,6 +52,7 @@ from auto_anki.codex import (
     run_codex_pipeline,
 )
 from auto_anki.dedup import prune_contexts, prune_conversations
+from auto_anki.llm_backends import list_backends
 from auto_anki.state import StateTracker, ensure_run_dir
 
 # Silence HuggingFace tokenizers fork/parallelism warnings
@@ -261,16 +262,49 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Build contexts/prompts but skip calling codex exec.",
     )
+    # LLM Backend configuration
+    parser.add_argument(
+        "--llm-backend",
+        choices=list_backends(),
+        default=None,
+        help=(
+            "LLM backend to use for card generation. "
+            "Choices: %(choices)s. "
+            "Default from config file or 'codex'."
+        ),
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=None,
+        help="Model to use for LLM calls (overrides config file and stage-specific settings).",
+    )
+    parser.add_argument(
+        "--llm-model-stage1",
+        default=None,
+        help="Model to use for Stage 1 filtering (overrides config file).",
+    )
+    parser.add_argument(
+        "--llm-model-stage2",
+        default=None,
+        help="Model to use for Stage 2 card generation (overrides config file).",
+    )
+    parser.add_argument(
+        "--llm-extra-arg",
+        action="append",
+        default=[],
+        help="Repeatable passthrough arguments for LLM backend.",
+    )
+    # Legacy Codex-specific arguments (deprecated, kept for backward compatibility)
     parser.add_argument(
         "--codex-model",
         default=None,
-        help="Optional model override passed to codex exec via --model (default: gpt-5.1).",
+        help="[DEPRECATED: use --llm-model] Optional model override passed to codex exec via --model (default: gpt-5.1).",
     )
     parser.add_argument(
         "--model-reasoning-effort",
         default=None,
         help=(
-            "Set Codex config model_reasoning_effort. "
+            "Set reasoning effort for Codex backend. "
             "If unset, defaults to 'medium' in single-stage mode, "
             "or 'low' (stage 1) / 'high' (stage 2) when --two-stage is enabled."
         ),
@@ -279,7 +313,7 @@ def parse_args() -> argparse.Namespace:
         "--codex-extra-arg",
         action="append",
         default=[],
-        help="Repeatable passthrough arguments for codex exec (e.g. --codex-extra-arg '--sandbox=workspace-write').",
+        help="[DEPRECATED: use --llm-extra-arg] Repeatable passthrough arguments for codex exec.",
     )
     parser.add_argument(
         "--verbose",
@@ -373,8 +407,9 @@ def _process_stage2_batch(
     try:
         prompt = build_conversation_prompt(cards_for_prompt, filtered_chunk, args)
 
-        stage2_model = args.codex_model_stage2 if args.two_stage else None
-        stage2_reasoning = args.model_reasoning_effort or ("high" if args.two_stage else "medium")
+        # Use resolved stage2 settings
+        stage2_model = getattr(args, "llm_model_stage2", None) or (args.codex_model_stage2 if args.two_stage else None)
+        stage2_reasoning = getattr(args, "model_reasoning_effort_stage2", None) or args.model_reasoning_effort or ("high" if args.two_stage else "medium")
 
         response_text = run_codex_exec(
             prompt,
@@ -412,11 +447,76 @@ def _process_stage2_batch(
     return result
 
 
+def _apply_llm_config(args: argparse.Namespace, config: Dict[str, Any]) -> None:
+    """Apply LLM backend configuration from config file, with CLI overrides.
+
+    This sets up args with the resolved LLM settings, applying the precedence:
+    1. CLI arguments (highest priority)
+    2. Config file settings
+    3. Hardcoded defaults (lowest priority)
+    """
+    # Get LLM backend (CLI > config > default)
+    if args.llm_backend is None:
+        args.llm_backend = config.get("llm_backend", "codex")
+
+    # Get backend-specific config from config file
+    llm_config = config.get("llm_config", {})
+    backend_cfg = llm_config.get(args.llm_backend, {})
+
+    # Default models per backend
+    default_models = {
+        "codex": "gpt-5.1",
+        "claude-code": "claude-sonnet-4-20250514",
+    }
+
+    # Resolve model settings with proper fallback chain
+    # For Stage 1: CLI llm_model_stage1 > CLI llm_model > config model_stage1 > config model > default
+    # For Stage 2: CLI llm_model_stage2 > CLI llm_model > config model_stage2 > config model > default
+    config_model = backend_cfg.get("model") or default_models.get(args.llm_backend)
+    config_model_stage1 = backend_cfg.get("model_stage1") or config_model
+    config_model_stage2 = backend_cfg.get("model_stage2") or config_model
+
+    # Apply to args with CLI override priority
+    if args.llm_model:
+        # CLI --llm-model overrides everything
+        args.llm_model_stage1 = args.llm_model_stage1 or args.llm_model
+        args.llm_model_stage2 = args.llm_model_stage2 or args.llm_model
+    else:
+        # Fall back to config
+        args.llm_model_stage1 = args.llm_model_stage1 or config_model_stage1
+        args.llm_model_stage2 = args.llm_model_stage2 or config_model_stage2
+        args.llm_model = config_model
+
+    # For backward compat: also update codex-specific args
+    if args.llm_backend == "codex":
+        args.codex_model_stage1 = args.codex_model_stage1 or args.llm_model_stage1
+        args.codex_model_stage2 = args.codex_model_stage2 or args.llm_model_stage2
+        if args.codex_model is None:
+            args.codex_model = args.llm_model
+
+    # Reasoning effort (Codex-specific, but stored generically)
+    config_reasoning = backend_cfg.get("reasoning_effort")
+    config_reasoning_stage1 = backend_cfg.get("reasoning_effort_stage1") or config_reasoning
+    config_reasoning_stage2 = backend_cfg.get("reasoning_effort_stage2") or config_reasoning
+
+    if args.model_reasoning_effort is None:
+        # Use config values as base, but let the pipeline set stage-specific defaults
+        args.model_reasoning_effort = config_reasoning
+        args.model_reasoning_effort_stage1 = config_reasoning_stage1
+        args.model_reasoning_effort_stage2 = config_reasoning_stage2
+    else:
+        args.model_reasoning_effort_stage1 = args.model_reasoning_effort
+        args.model_reasoning_effort_stage2 = args.model_reasoning_effort
+
+
 def main() -> None:
     # CLI args + optional config file
     args = parse_args()
     config, config_path = _load_config()
     config_root = config_path.parent if config_path else None
+
+    # Apply LLM backend configuration
+    _apply_llm_config(args, config)
 
     def resolve_path(value: Optional[str], default: Path) -> Path:
         if not value:
@@ -482,6 +582,10 @@ def main() -> None:
             verbose=args.verbose,
         )
     except ConnectionError as e:
+        # Emit a stable sentinel for tooling (e.g. batch scripts) to detect
+        # Anki connection issues robustly without depending on human-facing
+        # error message text.
+        print("ANKI_CONNECT_ERROR")
         print(f"Error: {e}")
         sys.exit(1)
     except RuntimeError as e:
@@ -489,6 +593,12 @@ def main() -> None:
         sys.exit(1)
     if args.verbose:
         print(f"✓ Loaded {len(cards)} cards from Anki")
+        print(f"LLM backend: {args.llm_backend}")
+        if args.two_stage:
+            print(f"  Stage 1 model: {args.llm_model_stage1}")
+            print(f"  Stage 2 model: {args.llm_model_stage2}")
+        else:
+            print(f"  Model: {args.llm_model}")
         if date_filter and date_filter.start_date:
             print(f"Date filter: {date_filter.start_date} to {date_filter.end_date or 'now'}")
         if args.unprocessed_only:
@@ -588,13 +698,15 @@ def main() -> None:
                 continue
 
             try:
-                stage1_reasoning = args.model_reasoning_effort or "low"
+                # Use resolved stage1 settings
+                stage1_model = getattr(args, "llm_model_stage1", None) or args.codex_model_stage1
+                stage1_reasoning = getattr(args, "model_reasoning_effort_stage1", None) or args.model_reasoning_effort or "low"
                 response_text_stage1 = run_codex_exec(
                     filter_prompt,
                     idx,
                     run_dir,
                     args,
-                    model_override=args.codex_model_stage1,
+                    model_override=stage1_model,
                     reasoning_override=stage1_reasoning,
                     label="_stage1",
                 )
