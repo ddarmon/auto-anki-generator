@@ -3,7 +3,13 @@
 import pytest
 from auto_anki.cards import Card, normalize_text
 from auto_anki.contexts import ChatTurn
-from auto_anki.dedup import is_duplicate_context, quick_similarity
+from auto_anki.dedup import (
+    DuplicateFlags,
+    DuplicateMatch,
+    is_duplicate_context,
+    quick_similarity,
+    enrich_cards_with_duplicate_flags,
+)
 
 
 class TestIsDuplicateContext:
@@ -178,3 +184,152 @@ class TestQuickSimilarityForDedup:
 
         sim = quick_similarity(norm1, norm2)
         assert sim > 0  # Some overlap expected
+
+
+class TestDuplicateFlags:
+    """Tests for the DuplicateFlags dataclass."""
+
+    def test_to_dict_with_match(self):
+        """DuplicateFlags.to_dict() should serialize correctly with a match."""
+        card = Card(
+            deck="Test",
+            front="What is Python?",
+            back="A programming language.",
+            tags=["python"],
+            meta="",
+            data_search="",
+            front_norm="",
+            back_norm="",
+        )
+        match = DuplicateMatch(
+            card_index=0,
+            similarity=0.92,
+            matched_card=card,
+        )
+        flags = DuplicateFlags(
+            is_likely_duplicate=True,
+            similarity_score=0.92,
+            best_match=match,
+            threshold_used=0.85,
+        )
+
+        result = flags.to_dict()
+
+        assert result["is_likely_duplicate"] is True
+        assert result["similarity_score"] == 0.92
+        assert result["threshold_used"] == 0.85
+        assert result["matched_card"]["deck"] == "Test"
+        assert result["matched_card"]["front"] == "What is Python?"
+
+    def test_to_dict_without_match(self):
+        """DuplicateFlags.to_dict() should handle None match."""
+        flags = DuplicateFlags(
+            is_likely_duplicate=False,
+            similarity_score=0.3,
+            best_match=None,
+            threshold_used=0.85,
+        )
+
+        result = flags.to_dict()
+
+        assert result["is_likely_duplicate"] is False
+        assert result["similarity_score"] == 0.3
+        assert result["matched_card"] is None
+
+    def test_to_dict_truncates_long_text(self):
+        """DuplicateFlags.to_dict() should truncate long front/back text."""
+        long_text = "x" * 500
+        card = Card(
+            deck="Test",
+            front=long_text,
+            back=long_text,
+            tags=[],
+            meta="",
+            data_search="",
+            front_norm="",
+            back_norm="",
+        )
+        match = DuplicateMatch(card_index=0, similarity=0.9, matched_card=card)
+        flags = DuplicateFlags(
+            is_likely_duplicate=True,
+            similarity_score=0.9,
+            best_match=match,
+            threshold_used=0.85,
+        )
+
+        result = flags.to_dict()
+
+        assert len(result["matched_card"]["front"]) == 200
+        assert len(result["matched_card"]["back"]) == 200
+
+
+class TestEnrichCardsWithDuplicateFlags:
+    """Tests for enrich_cards_with_duplicate_flags function."""
+
+    @pytest.fixture
+    def existing_cards(self):
+        """Create existing cards for testing."""
+        return [
+            Card(
+                deck="Test",
+                front="What is Python?",
+                back="A programming language.",
+                tags=[],
+                meta="",
+                data_search="",
+                front_norm=normalize_text("What is Python?"),
+                back_norm=normalize_text("A programming language."),
+            ),
+        ]
+
+    def test_empty_proposed_cards(self, existing_cards):
+        """Empty proposed cards list should return empty list."""
+        result = enrich_cards_with_duplicate_flags([], existing_cards, threshold=0.85)
+        assert result == []
+
+    def test_empty_existing_cards(self):
+        """Empty existing cards should mark all as not duplicate."""
+        proposed = [{"front": "Test question", "back": "Test answer"}]
+        result = enrich_cards_with_duplicate_flags(proposed, [], threshold=0.85)
+
+        assert len(result) == 1
+        assert "duplicate_flags" in result[0]
+        assert result[0]["duplicate_flags"]["is_likely_duplicate"] is False
+
+    def test_preserves_original_card_data(self, existing_cards):
+        """Should preserve all original card fields."""
+        proposed = [{
+            "front": "Completely new question",
+            "back": "Completely new answer",
+            "deck": "MyDeck",
+            "confidence": 0.95,
+            "tags": ["test"],
+            "custom_field": "preserved",
+        }]
+
+        result = enrich_cards_with_duplicate_flags(proposed, existing_cards, threshold=0.85)
+
+        assert result[0]["deck"] == "MyDeck"
+        assert result[0]["confidence"] == 0.95
+        assert result[0]["tags"] == ["test"]
+        assert result[0]["custom_field"] == "preserved"
+        assert "duplicate_flags" in result[0]
+
+    def test_modifies_in_place(self, existing_cards):
+        """Should modify the input list in place (and return it)."""
+        proposed = [{"front": "Test", "back": "Test"}]
+        original_id = id(proposed)
+
+        result = enrich_cards_with_duplicate_flags(proposed, existing_cards, threshold=0.85)
+
+        assert id(result) == original_id
+        assert "duplicate_flags" in proposed[0]
+
+    def test_handles_missing_front_back(self, existing_cards):
+        """Should handle cards without front/back gracefully."""
+        proposed = [{"deck": "Test"}]  # No front or back
+
+        result = enrich_cards_with_duplicate_flags(proposed, existing_cards, threshold=0.85)
+
+        assert "duplicate_flags" in result[0]
+        assert result[0]["duplicate_flags"]["is_likely_duplicate"] is False

@@ -51,7 +51,7 @@ from auto_anki.codex import (
     run_codex_exec,
     run_codex_pipeline,
 )
-from auto_anki.dedup import prune_contexts, prune_conversations
+from auto_anki.dedup import enrich_cards_with_duplicate_flags, prune_contexts, prune_conversations
 from auto_anki.llm_backends import list_backends
 from auto_anki.state import StateTracker, ensure_run_dir
 
@@ -333,6 +333,21 @@ def parse_args() -> argparse.Namespace:
         default=8000,
         help="Maximum total characters per conversation before splitting (default: %(default)s).",
     )
+    # Post-generation duplicate detection
+    parser.add_argument(
+        "--post-dedup-threshold",
+        type=float,
+        default=0.85,
+        help=(
+            "Semantic similarity threshold for flagging likely duplicates in post-generation dedup "
+            "(default: %(default)s). Cards with similarity above this threshold are flagged."
+        ),
+    )
+    parser.add_argument(
+        "--skip-post-dedup",
+        action="store_true",
+        help="Skip post-generation duplicate detection (proposed cards will not be flagged).",
+    )
     # Defaults
     parser.set_defaults(two_stage=True)
 
@@ -347,6 +362,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--similarity-threshold must fall within (0, 1].")
     if args.semantic_similarity_threshold <= 0 or args.semantic_similarity_threshold > 1:
         parser.error("--semantic-similarity-threshold must fall within (0, 1].")
+    if args.post_dedup_threshold <= 0 or args.post_dedup_threshold > 1:
+        parser.error("--post-dedup-threshold must fall within (0, 1].")
     if args.min_score < 0:
         parser.error("--min-score must be non-negative.")
     if args.max_chat_files <= 0:
@@ -380,18 +397,18 @@ def ensure_run_dir(base_dir: Path) -> Path:
 
 
 def _process_stage2_batch(
-    batch_info: Tuple[int, List[Conversation], List[Card], Path, Any],
+    batch_info: Tuple[int, List[Conversation], Path, Any],
 ) -> Dict[str, Any]:
     """Process a single Stage 2 batch. Used for parallel execution.
 
     Args:
-        batch_info: Tuple of (batch_idx, filtered_conversations, cards_for_prompt, run_dir, args)
+        batch_info: Tuple of (batch_idx, filtered_conversations, run_dir, args)
 
     Returns:
         Dict with keys: success, batch_idx, cards, skipped_conversations, skipped_turns,
                        conversation_ids, source_paths, error
     """
-    batch_idx, filtered_chunk, cards_for_prompt, run_dir, args = batch_info
+    batch_idx, filtered_chunk, run_dir, args = batch_info
 
     result: Dict[str, Any] = {
         "success": False,
@@ -405,7 +422,7 @@ def _process_stage2_batch(
     }
 
     try:
-        prompt = build_conversation_prompt(cards_for_prompt, filtered_chunk, args)
+        prompt = build_conversation_prompt(filtered_chunk, args)
 
         # Use resolved stage2 settings
         stage2_model = getattr(args, "llm_model_stage2", None) or (args.codex_model_stage2 if args.two_stage else None)
@@ -646,8 +663,6 @@ def main() -> None:
         json.dumps(conversations_data, indent=2)
     )
 
-    cards_for_prompt = select_existing_cards_for_prompt(cards, args.max_existing_cards)
-
     # Process conversation chunks (optionally with two-stage pipeline)
     new_conversation_ids: List[str] = []
     all_proposed_cards: List[Dict[str, Any]] = []
@@ -690,7 +705,7 @@ def main() -> None:
                 prompt_stage1_path = run_dir / f"prompt_stage1_batch_{idx:02d}.txt"
                 prompt_stage1_path.write_text(filter_prompt)
                 prompt_stage2_path = run_dir / f"prompt_batch_{idx:02d}.txt"
-                stage2_preview = build_conversation_prompt(cards_for_prompt, chunk, args)
+                stage2_preview = build_conversation_prompt(chunk, args)
                 prompt_stage2_path.write_text(stage2_preview)
                 if args.verbose:
                     print(f"[dry-run] Saved stage-1 prompt at {prompt_stage1_path}")
@@ -757,7 +772,7 @@ def main() -> None:
         # Handle dry-run for non-two-stage mode
         if args.dry_run and not args.two_stage:
             prompt_path = run_dir / f"prompt_batch_{idx:02d}.txt"
-            prompt = build_conversation_prompt(cards_for_prompt, filtered_chunk, args)
+            prompt = build_conversation_prompt(filtered_chunk, args)
             prompt_path.write_text(prompt)
             if args.verbose:
                 print(f"[dry-run] Saved prompt at {prompt_path}")
@@ -778,7 +793,7 @@ def main() -> None:
 
         # Prepare batch info for parallel processing
         batch_infos = [
-            (idx, filtered_chunk, cards_for_prompt, run_dir, args)
+            (idx, filtered_chunk, run_dir, args)
             for idx, filtered_chunk in stage2_batches
         ]
 
@@ -817,6 +832,34 @@ def main() -> None:
                 except Exception as e:
                     chunk_stats["failed"] += 1
                     print(f"⚠️  Batch {batch_idx} ERROR: {str(e)[:100]}")
+
+    # ========================================================================
+    # PHASE 3: Post-generation duplicate detection
+    # ========================================================================
+    if not args.dry_run and all_proposed_cards and not args.skip_post_dedup:
+        if args.verbose:
+            print(f"\n{'='*60}")
+            print(f"Post-generation duplicate detection...")
+            print(f"{'='*60}")
+
+        all_proposed_cards = enrich_cards_with_duplicate_flags(
+            all_proposed_cards,
+            cards,  # Full existing cards list from Anki
+            threshold=args.post_dedup_threshold,
+            semantic_model=args.semantic_model,
+            cache_dir=cache_dir,
+            verbose=args.verbose,
+        )
+
+        # Count flagged duplicates for summary
+        dup_count = sum(
+            1 for c in all_proposed_cards
+            if c.get("duplicate_flags", {}).get("is_likely_duplicate", False)
+        )
+        chunk_stats["post_dedup_flagged"] = dup_count
+
+        if args.verbose:
+            print(f"✓ Post-dedup complete: {dup_count}/{len(all_proposed_cards)} cards flagged as likely duplicates")
 
     if not args.dry_run:
         if args.verbose:
@@ -870,6 +913,8 @@ def main() -> None:
             print(f"Batches failed:          {chunk_stats['failed']}/{total_chunks}")
             print(f"Conversations processed: {len(new_conversation_ids)}")
             print(f"Cards generated:         {chunk_stats['total_cards']}")
+            if "post_dedup_flagged" in chunk_stats:
+                print(f"Likely duplicates:       {chunk_stats['post_dedup_flagged']}")
             print(f"Files processed:         {len(processed_files)}")
             print(f"Run artifacts:           {run_dir}")
             if chunk_stats['failed'] > 0:
@@ -878,7 +923,10 @@ def main() -> None:
         else:
             status = "✓" if chunk_stats['failed'] == 0 else "⚠️"
             print(f"{status} Run complete: {chunk_stats['success']}/{total_chunks} batches successful")
-            print(f"Generated {chunk_stats['total_cards']} cards from {len(new_conversation_ids)} conversations")
+            dup_info = ""
+            if "post_dedup_flagged" in chunk_stats:
+                dup_info = f" ({chunk_stats['post_dedup_flagged']} flagged as likely duplicates)"
+            print(f"Generated {chunk_stats['total_cards']} cards from {len(new_conversation_ids)} conversations{dup_info}")
             if chunk_stats['failed'] > 0:
                 print(f"⚠️  {chunk_stats['failed']} batch(es) failed - check {run_dir}")
             print(f"Run artifacts saved to {run_dir}")

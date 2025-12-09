@@ -5,18 +5,56 @@ This module owns:
 - `SemanticCardIndex` (FAISS/NumPy-backed semantic index)
 - `quick_similarity` / `is_duplicate_context`
 - `prune_contexts` (hybrid string + semantic dedup)
+- `enrich_cards_with_duplicate_flags` (post-generation dedup)
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from auto_anki.cards import Card, normalize_text
 from auto_anki.contexts import ChatTurn, Conversation
+
+
+@dataclass
+class DuplicateMatch:
+    """Result of a semantic similarity check against existing cards."""
+
+    card_index: int  # Index in the existing cards list
+    similarity: float  # Cosine similarity score (0-1)
+    matched_card: Card  # The existing card that matched
+
+
+@dataclass
+class DuplicateFlags:
+    """Duplicate detection results for a proposed card."""
+
+    is_likely_duplicate: bool  # True if similarity >= threshold
+    similarity_score: float  # Best match score (0-1)
+    best_match: Optional[DuplicateMatch]  # Best matching existing card
+    threshold_used: float  # Threshold that was applied
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to JSON-serializable dict for enriched card output."""
+        result: Dict[str, Any] = {
+            "is_likely_duplicate": self.is_likely_duplicate,
+            "similarity_score": round(self.similarity_score, 4),
+            "threshold_used": self.threshold_used,
+        }
+        if self.best_match:
+            result["matched_card"] = {
+                "deck": self.best_match.matched_card.deck,
+                "front": self.best_match.matched_card.front[:200],
+                "back": self.best_match.matched_card.back[:200] if self.best_match.matched_card.back else "",
+            }
+        else:
+            result["matched_card"] = None
+        return result
 
 try:
     import faiss  # type: ignore
@@ -209,6 +247,114 @@ class SemanticCardIndex:
         scores = self.embeddings @ query_vec
         max_score = float(scores.max())
         return max_score >= threshold
+
+    def find_similar(
+        self,
+        text: str,
+        top_k: int = 1,
+    ) -> List[Tuple[int, float]]:
+        """Find top-k similar cards with their indices and similarity scores.
+
+        Args:
+            text: The text to search for (e.g., proposed card front+back)
+            top_k: Number of top matches to return
+
+        Returns:
+            List of (card_index, similarity_score) tuples, sorted by similarity desc.
+            Returns empty list if no cards or empty text.
+        """
+        if not text.strip():
+            return []
+
+        # Encode and normalize query
+        query_emb = self.model.encode([text], convert_to_numpy=True)
+        query_vec = query_emb[0].astype("float32")
+        norm = self._np.linalg.norm(query_vec)
+        if norm == 0:
+            return []
+        query_vec = query_vec / norm
+
+        if FAISS_AVAILABLE:
+            if self.index.ntotal == 0:
+                return []
+
+            # Limit k to actual number of cards
+            k = min(top_k, self.index.ntotal)
+            distances, indices = self.index.search(query_vec.reshape(1, -1), k=k)
+
+            results: List[Tuple[int, float]] = []
+            for i in range(k):
+                idx = int(indices[0][i])
+                score = float(distances[0][i])
+                if idx >= 0:  # FAISS returns -1 for empty results
+                    results.append((idx, score))
+            return results
+
+        # NumPy fallback
+        if self.embeddings.shape[0] == 0:
+            return []
+
+        scores = self.embeddings @ query_vec
+        # Get top-k indices
+        k = min(top_k, len(scores))
+        top_indices = self._np.argsort(scores)[-k:][::-1]
+
+        results = [(int(idx), float(scores[idx])) for idx in top_indices]
+        return results
+
+    def check_proposed_card(
+        self,
+        front: str,
+        back: str,
+        threshold: float = 0.85,
+    ) -> DuplicateFlags:
+        """Check a proposed card against existing cards for duplicates.
+
+        Args:
+            front: Proposed card front text
+            back: Proposed card back text
+            threshold: Similarity threshold above which = likely duplicate
+
+        Returns:
+            DuplicateFlags with match info and similarity score
+        """
+        # Combine front and back for embedding (same as how existing cards are indexed)
+        text = (front + " " + back).strip()
+
+        if not text:
+            return DuplicateFlags(
+                is_likely_duplicate=False,
+                similarity_score=0.0,
+                best_match=None,
+                threshold_used=threshold,
+            )
+
+        # Find the single best match
+        matches = self.find_similar(text, top_k=1)
+
+        if not matches:
+            return DuplicateFlags(
+                is_likely_duplicate=False,
+                similarity_score=0.0,
+                best_match=None,
+                threshold_used=threshold,
+            )
+
+        card_idx, similarity = matches[0]
+        is_dup = similarity >= threshold
+
+        best_match = DuplicateMatch(
+            card_index=card_idx,
+            similarity=similarity,
+            matched_card=self.cards[card_idx],
+        )
+
+        return DuplicateFlags(
+            is_likely_duplicate=is_dup,
+            similarity_score=similarity,
+            best_match=best_match,
+            threshold_used=threshold,
+        )
 
 
 def quick_similarity(s1: str, s2: str) -> float:
@@ -455,14 +601,119 @@ def prune_conversations(
     return pruned
 
 
+def enrich_cards_with_duplicate_flags(
+    proposed_cards: List[Dict[str, Any]],
+    existing_cards: List[Card],
+    threshold: float = 0.85,
+    semantic_model: str = "all-MiniLM-L6-v2",
+    cache_dir: Optional[Path] = None,
+    verbose: bool = False,
+) -> List[Dict[str, Any]]:
+    """Enrich proposed cards with duplicate detection flags.
+
+    For each proposed card, finds the best matching existing card using
+    semantic similarity and adds a `duplicate_flags` field with:
+    - is_likely_duplicate: bool
+    - similarity_score: float
+    - matched_card: {deck, front, back} or None
+    - threshold_used: float
+
+    Args:
+        proposed_cards: List of proposed card dicts from LLM
+        existing_cards: List of Card objects from Anki
+        threshold: Similarity threshold for flagging as duplicate (default: 0.85)
+        semantic_model: SentenceTransformer model name
+        cache_dir: Directory for caching embeddings
+        verbose: Print progress
+
+    Returns:
+        Same list of cards with `duplicate_flags` field added to each
+    """
+    if not proposed_cards:
+        return proposed_cards
+
+    if not existing_cards:
+        # No existing cards - nothing can be a duplicate
+        if verbose:
+            print("  No existing cards to check against - skipping post-dedup")
+        for card in proposed_cards:
+            card["duplicate_flags"] = DuplicateFlags(
+                is_likely_duplicate=False,
+                similarity_score=0.0,
+                best_match=None,
+                threshold_used=threshold,
+            ).to_dict()
+        return proposed_cards
+
+    # Build semantic index over existing cards
+    try:
+        from sentence_transformers import SentenceTransformer  # type: ignore
+        import numpy as _np  # type: ignore
+
+        if verbose:
+            print(f"  Building semantic index for post-generation dedup ({len(existing_cards)} cards)...")
+
+        semantic_index = SemanticCardIndex(
+            cards=existing_cards,
+            sentence_transformer_cls=SentenceTransformer,
+            np_module=_np,
+            model_name=semantic_model,
+            verbose=verbose,
+            cache_dir=cache_dir,
+        )
+
+    except ImportError:
+        # Semantic dependencies not available - skip post-dedup
+        print(
+            "⚠ Post-generation dedup skipped: semantic dependencies not found."
+        )
+        print(
+            "  Install with: uv pip install -e '.[semantic]'"
+        )
+        for card in proposed_cards:
+            card["duplicate_flags"] = {
+                "is_likely_duplicate": False,
+                "similarity_score": 0.0,
+                "matched_card": None,
+                "threshold_used": threshold,
+                "error": "semantic_dependencies_missing",
+            }
+        return proposed_cards
+
+    # Check each proposed card against the index
+    dup_count = 0
+    total = len(proposed_cards)
+
+    for idx, card in enumerate(proposed_cards, 1):
+        if verbose:
+            print(f"  Checking card {idx}/{total} for duplicates...", end="\r")
+
+        front = card.get("front", "")
+        back = card.get("back", "")
+
+        flags = semantic_index.check_proposed_card(front, back, threshold)
+        card["duplicate_flags"] = flags.to_dict()
+
+        if flags.is_likely_duplicate:
+            dup_count += 1
+
+    if verbose:
+        print(f"  Post-dedup complete: {dup_count}/{total} cards flagged as likely duplicates")
+
+    return proposed_cards
+
+
 __all__ = [
     "Card",
     "ChatTurn",
     "Conversation",
+    "DuplicateFlags",
+    "DuplicateMatch",
     "SemanticCardIndex",
     "quick_similarity",
     "is_duplicate_context",
     "is_conversation_duplicate",
     "prune_contexts",
     "prune_conversations",
+    "enrich_cards_with_duplicate_flags",
 ]

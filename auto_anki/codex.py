@@ -863,7 +863,6 @@ def run_codex_pipeline(
 
 
 def build_conversation_prompt(
-    cards: List[Card],
     conversations: List[Conversation],
     args: Any,
 ) -> str:
@@ -875,18 +874,13 @@ def build_conversation_prompt(
     - Avoid cards from exchanges that were later corrected
     - Create coherent card sets that build on each other
 
+    Note: Duplicate detection is handled post-generation via semantic similarity,
+    so existing cards are NOT included in this prompt. The LLM focuses purely on
+    generating high-quality cards from the conversation content.
+
     User prompts are truncated to MAX_USER_PROMPT_CHARS to prevent context
     window overflow from mega-pastes (users pasting entire HTML docs, etc.).
     """
-    cards_payload = [
-        {
-            "deck": card.deck,
-            "front": card.front[:200],  # Truncate for space
-            "tags": card.tags,
-        }
-        for card in cards
-    ]
-
     conversations_payload = [
         {
             "conversation_id": conv.conversation_id,
@@ -950,7 +944,6 @@ def build_conversation_prompt(
     }
 
     payload = {
-        "existing_cards": cards_payload,
         "candidate_conversations": conversations_payload,
         "output_contract": contract,
     }
@@ -998,7 +991,7 @@ def build_conversation_prompt(
         - **Prioritize final understanding** over intermediate confusion.
         - Use the `turn_index` to link cards to specific exchanges.
         - Use `depends_on` to indicate card ordering for learning when cards naturally build on each other.
-        - If `aggregate_signals.duplicate_turns` is set, those turns are already covered—skip them.
+        - Focus on extracting valuable knowledge - duplicate detection is handled separately.
 
         ## Red Flags to Skip
 
@@ -1083,12 +1076,14 @@ def build_conversation_prompt(
         ## Your Task
 
         For each `candidate_conversation`:
-        1. Decide which turns contain learning-worthy knowledge (not trivial, not already covered).
-        2. Check against `existing_cards` to avoid duplicates.
-        3. If justified, create one or MORE atomic cards following the guidelines above.
-        4. For each card, choose an appropriate deck, `card_style`, and (optionally) tags.
-        5. Provide a confidence score and brief notes explaining why the card matters or how it
+        1. Decide which turns contain learning-worthy knowledge (not trivial, clearly explained).
+        2. If justified, create one or MORE atomic cards following the guidelines above.
+        3. For each card, choose an appropriate deck, `card_style`, and (optionally) tags.
+        4. Provide a confidence score and brief notes explaining why the card matters or how it
            might be used.
+
+        Note: Duplicate detection against existing cards is handled separately after generation.
+        Focus on creating high-quality cards from the conversation content.
 
         Before finalizing each card, mentally check:
         - Does it follow the Minimum Information Principle?

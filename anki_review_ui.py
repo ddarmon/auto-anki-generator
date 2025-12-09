@@ -167,7 +167,12 @@ class CardReviewSession:
             'remaining': len(self.cards) - len(self.decisions)
         }
 
-    def apply_filters(self, deck_filter: str = "all", min_confidence: float = 0.0):
+    def apply_filters(
+        self,
+        deck_filter: str = "all",
+        min_confidence: float = 0.0,
+        duplicate_filter: str = "all",
+    ):
         """Apply filters to card list and update filtered_indices."""
         self.filtered_indices = []
         for idx, card in enumerate(self.cards):
@@ -178,6 +183,15 @@ class CardReviewSession:
             # Confidence filter
             if card.get('confidence', 0) < min_confidence:
                 continue
+
+            # Duplicate filter
+            if duplicate_filter != "all":
+                dup_flags = card.get('duplicate_flags', {})
+                is_dup = dup_flags.get('is_likely_duplicate', False)
+                if duplicate_filter == "duplicates_only" and not is_dup:
+                    continue
+                if duplicate_filter == "unique_only" and is_dup:
+                    continue
 
             self.filtered_indices.append(idx)
 
@@ -479,6 +493,9 @@ app_ui = ui.page_fluid(
                     # Decision Status
                     ui.output_ui("decision_status"),
 
+                    # Duplicate Warning (if flagged)
+                    ui.output_ui("duplicate_warning"),
+
                     # Deck and Tags
                     ui.div(
                         ui.strong("Deck: "),
@@ -655,6 +672,15 @@ app_ui = ui.page_fluid(
                         max=1.0,
                         value=0.0,
                         step=0.05
+                    ),
+                    ui.input_select(
+                        "filter_duplicate",
+                        "Duplicate Status:",
+                        choices={
+                            "all": "All Cards",
+                            "duplicates_only": "Likely Duplicates Only",
+                            "unique_only": "Unique Cards Only",
+                        },
                     ),
                     ui.input_action_button("btn_apply_filters", "Apply Filters", class_="btn-primary", width="100%"),
                     ui.output_text("filter_message", inline=True),
@@ -1046,6 +1072,81 @@ def server(input: Inputs, output: Outputs, session: Session):
         stats_trigger.get()  # Re-render when decisions change
         card = get_current_card()
         return card.get('notes', 'No notes') if card else ""
+
+    @output
+    @render.ui
+    def duplicate_warning():
+        """Display a warning if this card is flagged as a likely duplicate."""
+        stats_trigger.get()  # Re-render when decisions change
+        card = get_current_card()
+        if not card:
+            return ui.div()
+
+        dup_flags = card.get('duplicate_flags')
+        if not dup_flags:
+            return ui.div()  # No duplicate flags - old format or post-dedup skipped
+
+        is_dup = dup_flags.get('is_likely_duplicate', False)
+        if not is_dup:
+            # Card is unique - show a small green indicator
+            similarity = dup_flags.get('similarity_score', 0)
+            return ui.div(
+                {"style": "padding: 8px; margin: 10px 0; background-color: #d4edda; border-left: 4px solid #28a745; border-radius: 4px;"},
+                ui.span(
+                    {"style": "color: #155724;"},
+                    f"✓ Unique card (best match: {similarity:.0%} similarity)"
+                )
+            )
+
+        # Card is flagged as likely duplicate
+        similarity = dup_flags.get('similarity_score', 0)
+        matched = dup_flags.get('matched_card', {})
+
+        # Color based on severity
+        if similarity >= 0.95:
+            bg_color = "#f8d7da"
+            border_color = "#dc3545"
+            text_color = "#721c24"
+            label = "VERY HIGH"
+        elif similarity >= 0.90:
+            bg_color = "#fff3cd"
+            border_color = "#fd7e14"
+            text_color = "#856404"
+            label = "HIGH"
+        else:
+            bg_color = "#fff3cd"
+            border_color = "#ffc107"
+            text_color = "#856404"
+            label = "MODERATE"
+
+        warning_content = [
+            ui.div(
+                {"style": f"font-weight: bold; color: {text_color}; margin-bottom: 5px;"},
+                f"⚠ LIKELY DUPLICATE ({label}) - {similarity:.0%} match"
+            ),
+        ]
+
+        if matched:
+            warning_content.append(
+                ui.div(
+                    {"style": "margin-top: 8px;"},
+                    ui.strong("Similar to existing card:"),
+                    ui.div(
+                        {"style": "background-color: white; padding: 8px; margin-top: 5px; border-radius: 4px; font-size: 0.9em;"},
+                        ui.div(ui.strong("Deck: "), matched.get('deck', 'Unknown')),
+                        ui.div(
+                            {"style": "margin-top: 4px;"},
+                            ui.strong("Front: "),
+                            matched.get('front', '')[:150] + ("..." if len(matched.get('front', '')) > 150 else "")
+                        ),
+                    )
+                )
+            )
+
+        return ui.div(
+            {"style": f"padding: 10px; margin: 10px 0; background-color: {bg_color}; border-left: 4px solid {border_color}; border-radius: 4px;"},
+            *warning_content
+        )
 
     # Codex update status
     @output
@@ -1446,7 +1547,12 @@ def server(input: Inputs, output: Outputs, session: Session):
         if session:
             deck = input.filter_deck()
             min_conf = input.filter_confidence()
-            session.apply_filters(deck_filter=deck, min_confidence=min_conf)
+            dup_filter = input.filter_duplicate()
+            session.apply_filters(
+                deck_filter=deck,
+                min_confidence=min_conf,
+                duplicate_filter=dup_filter,
+            )
 
             # Reset to first filtered card
             if session.filtered_indices:

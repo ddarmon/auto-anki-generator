@@ -84,6 +84,10 @@ python3 auto_anki_agent.py \
 - `--semantic-model NAME`: SentenceTransformers model for semantic dedup (default: all-MiniLM-L6-v2)
 - `--semantic-similarity-threshold FLOAT`: Cosine similarity threshold for semantic dedup (default: 0.85)
 
+### Post-Generation Duplicate Detection ✅ NEW!
+- `--post-dedup-threshold FLOAT`: Similarity threshold for post-generation dedup (default: 0.85)
+- `--skip-post-dedup`: Disable post-generation duplicate detection (restores old behavior)
+
 ### Heuristic Filtering (Optional)
 - `--use-filter-heuristics`: Enable heuristic pre-filtering before Stage 1 LLM (disabled by default)
 - `--min-score FLOAT`: Minimum aggregate score for conversations (only applies with `--use-filter-heuristics`)
@@ -200,13 +204,17 @@ Tracks:
 4. **Two-stage LLM pipeline** (default):
    - **Stage 1 (Filter)**: Fast LLM reviews full conversations, selects best candidates
    - **Stage 2 (Generate)**: Strong LLM generates cards in parallel (3 concurrent workers)
-5. **Codex sees full learning journey**:
+5. **Post-generation deduplication** (NEW!):
+   - After LLM generates cards, semantic similarity check against **full** existing card database
+   - Enriches cards with `duplicate_flags` indicating likely duplicates
+   - UI displays color-coded warnings for review
+7. **Codex sees full learning journey**:
    - Follow-up questions (indicates user confusion)
    - Corrections in later turns
    - Topic evolution across turns
-6. **Codex generates** proposed cards linked to specific turns
-7. **Outputs** markdown and/or JSON for review
-8. **Updates state** to track processed conversations
+8. **Codex generates** proposed cards linked to specific turns
+9. **Outputs** markdown and/or JSON for review
+10. **Updates state** to track processed conversations
 
 **Note**: Heuristic scoring (`--use-filter-heuristics`) is optional and disabled by default. The Stage 1 LLM now handles quality filtering directly.
 
@@ -301,6 +309,12 @@ python3 auto_anki_agent.py \
      - `pip install sentence-transformers numpy faiss-cpu`
    - Force string-only mode: `--dedup-method string`
 6. **Process incrementally**: Use `--unprocessed-only` for daily runs
+7. **Control post-dedup** (NEW!):
+   - After LLM generates cards, semantic similarity runs against ALL existing cards
+   - Cards with similarity >0.85 are flagged as likely duplicates
+   - Adjust threshold: `--post-dedup-threshold 0.90` (stricter)
+   - Disable entirely: `--skip-post-dedup`
+   - UI shows color-coded warnings: red (>95%), orange (>90%), yellow (>85%)
 
 ## Troubleshooting
 
@@ -363,6 +377,12 @@ rm .auto_anki_agent_state.json
 │  Codex: gpt-5.1 w/ high reasoning    │
 │  Claude: opus-4.5 (powerful)         │
 └───────┬──────────────────────────────┘
+        │
+        ▼
+┌──────────────────┐
+│  Post-Generation │  ← Semantic similarity vs FULL card DB
+│  Dedup           │  ← Enriches cards with duplicate_flags
+└───────┬──────────┘
         │
         ▼
 ┌──────────────────┐
@@ -512,10 +532,11 @@ END_MONTH=1
 - [x] ~~Semantic deduplication with embeddings~~ ✅ **DONE!** (SentenceTransformers + FAISS vector cache)
 - [x] ~~Conversation-level processing~~ ✅ **DONE!** (LLM sees full learning journey)
 - [x] ~~Two-stage LLM pipeline~~ ✅ **DONE!** (Fast filter + slow generation)
-- [x] ~~Test suite~~ ✅ **DONE!** (123 tests covering core functions)
+- [x] ~~Test suite~~ ✅ **DONE!** (137 tests covering core functions)
 - [x] ~~Progress dashboard~~ ✅ **DONE!** (TUI with weekly stats + streak tracking)
 - [x] ~~Batch automation with usage throttling~~ ✅ **DONE!** (`scripts/auto_anki_batch.sh`)
 - [x] ~~Pluggable LLM backends~~ ✅ **DONE!** (Codex CLI + Claude Code)
+- [x] ~~Post-generation duplicate detection~~ ✅ **DONE!** (Semantic similarity vs full card DB, UI warnings)
 - [ ] Tag taxonomy management
 - [ ] Multi-deck routing logic with ML
 - [ ] Topic distribution visualization
@@ -546,7 +567,7 @@ uv run pytest tests/test_scoring.py -v
 | `test_normalization.py` | `normalize_text`, `quick_similarity` |
 | `test_parsing.py` | `parse_chat_entries`, `extract_turns`, `parse_chat_metadata` |
 | `test_date_filter.py` | `DateRangeFilter` class |
-| `test_dedup.py` | `is_duplicate_context` |
+| `test_dedup.py` | `is_duplicate_context`, `DuplicateFlags`, `enrich_cards_with_duplicate_flags` (21 tests) |
 | `test_llm_backends.py` | LLM backend abstraction (26 tests) |
 
 ### Dev Dependencies

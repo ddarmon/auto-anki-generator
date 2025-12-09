@@ -161,6 +161,11 @@ Format:
 - **Back** - Answer or explanation (green border)
 - **Metadata** - Deck, tags, confidence score
 - **Notes** - LLM's rationale for creating this card
+- **Duplicate Warning** ✅ NEW! - Color-coded alert if card is similar to existing card:
+  - 🔴 Red (>95% similarity) - Very likely duplicate
+  - 🟠 Orange (>90% similarity) - Likely duplicate
+  - 🟡 Yellow (>85% similarity) - Possible duplicate
+  - Shows similarity %, matched deck, and matched card front text
 
 ### Source Context
 - **User Prompt** - Original question from conversation
@@ -189,13 +194,21 @@ Format:
 2. Click "Apply Filters"
 3. Only cards above threshold will be shown
 
+**Filter by Duplicate Status:** ✅ NEW!
+1. Select from dropdown:
+   - **All Cards** - Show everything
+   - **Likely Duplicates Only** - Show only cards flagged as duplicates
+   - **Unique Cards Only** - Show only cards NOT flagged as duplicates
+2. Click "Apply Filters"
+3. Useful for reviewing duplicate candidates separately
+
 **Combine Filters:**
-- Use both deck + confidence filters together
+- Use deck + confidence + duplicate filters together
 - Status message shows: "✓ Showing X of Y cards"
 - Filtered cards are navigable with Next/Previous/Jump
 
 **Reset Filters:**
-- Select "All Decks" and set confidence to 0.0
+- Select "All Decks", set confidence to 0.0, select "All Cards"
 - Click "Apply Filters" to see all cards again
 
 ### Bulk Operations ✅ NEW!

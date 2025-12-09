@@ -86,7 +86,19 @@ facts, clear context, etc.).
        │  └─ Cards linked to specific turns via (conversation_id, turn_index)
        └─ Batches processed in parallel for ~3x speedup
 
-    6. OUTPUT PHASE
+    6. POST-GENERATION DEDUP PHASE (NEW!)
+       ├─ After LLM generates cards, run semantic similarity
+       │  against FULL existing card database (not truncated sample)
+       ├─ Uses SemanticCardIndex with FAISS for fast search
+       ├─ Enriches each proposed card with `duplicate_flags`:
+       │  ├─ is_likely_duplicate: bool
+       │  ├─ similarity_score: float
+       │  ├─ matched_card: {deck, front, back} (if duplicate)
+       │  └─ threshold_used: float
+       ├─ Controlled via CLI: --post-dedup-threshold, --skip-post-dedup
+       └─ UI displays color-coded warnings for review
+
+    7. OUTPUT PHASE
        ├─ Save artifacts to run directory
        │  └─ selected_conversations.json (full conversation context)
        ├─ Generate markdown preview
@@ -295,17 +307,35 @@ Filters and annotates conversations based on similarity to existing cards.
 -   String threshold: `--similarity-threshold` (default: 0.82)
 -   Semantic threshold: `--semantic-similarity-threshold` (default: 0.85)
 
-#### `build_conversation_prompt(cards, conversations, args) -> str`
+#### `enrich_cards_with_duplicate_flags(proposed_cards, existing_cards, ...) -> List[Dict]`
+
+Post-generation semantic deduplication against full existing card database.
+
+-   Runs AFTER LLM generates cards (not before)
+-   Checks each proposed card against ALL existing cards via semantic similarity
+-   Uses `SemanticCardIndex` with FAISS for efficient search
+-   Adds `duplicate_flags` dict to each proposed card:
+    -   `is_likely_duplicate`: bool
+    -   `similarity_score`: float (0-1)
+    -   `matched_card`: {deck, front, back} or None
+    -   `threshold_used`: float
+-   Controlled via `--post-dedup-threshold` (default: 0.85) and `--skip-post-dedup`
+-   UI displays color-coded warnings based on similarity score
+
+#### `build_conversation_prompt(conversations, args) -> str`
 
 Constructs the conversation-aware prompt sent to `codex exec`.
+
+**Note:** As of the post-generation dedup update, existing cards are NO LONGER
+included in the prompt. The LLM focuses purely on card quality; duplicate
+detection is handled post-generation via `enrich_cards_with_duplicate_flags()`.
 
 **Prompt structure:**
 
 1.  System instructions (Anki best practices + conversation analysis)
 2.  JSON contract specification (includes `conversation_id`, `turn_index`, `depends_on`)
-3.  Existing cards summary (compact)
-4.  Full conversations with all turns (enables learning journey analysis)
-5.  Output format requirements
+3.  Full conversations with all turns (enables learning journey analysis)
+4.  Output format requirements
 
 **LLM capabilities enabled by conversation context:**
 
@@ -963,6 +993,7 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 -   `prune_conversations()` - Filter/annotate duplicates
 -   `build_conversation_prompt()` - LLM interface
 -   `run_codex_exec()` - LLM invocation
+-   `enrich_cards_with_duplicate_flags()` - Post-generation semantic dedup
 
 ### Key Data Structures
 
@@ -975,6 +1006,8 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 -   `LLMBackend` - Abstract base class for LLM CLI backends
 -   `LLMConfig` - Backend-agnostic LLM configuration
 -   `LLMResponse` - Standardized response from any backend
+-   `DuplicateFlags` - Post-dedup similarity info attached to cards (dedup.py)
+-   `DuplicateMatch` - Info about matched existing card (dedup.py)
 
 ### Key Constants
 
@@ -1014,11 +1047,18 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 
 **Project status**: Production-ready with conversation-level processing,
 semantic deduplication, two-stage pipeline, parallel execution, interactive review UI,
-TUI progress dashboard, and **pluggable LLM backends**.
+TUI progress dashboard, **pluggable LLM backends**, and **post-generation duplicate detection**.
 
 **Current version**: Modular Python package with CLI entrypoints (`auto-anki`, `auto-anki-progress`)
 
 **Recent additions**:
+-   **Post-generation duplicate detection** (`auto_anki/dedup.py`)
+    -   Semantic similarity against FULL existing card database (not truncated sample)
+    -   `DuplicateFlags` and `DuplicateMatch` dataclasses
+    -   `enrich_cards_with_duplicate_flags()` function
+    -   CLI: `--post-dedup-threshold`, `--skip-post-dedup`
+    -   UI: Color-coded warnings (red/orange/yellow) + duplicate filter
+    -   Existing cards REMOVED from LLM prompts (simplified)
 -   **Pluggable LLM backend abstraction** (`auto_anki/llm_backends/`)
     -   Support for Codex CLI and Claude Code
     -   Per-backend, per-stage model configuration
