@@ -546,6 +546,8 @@ def main() -> None:
     # Paths (CLI overrides config; config overrides hardcoded defaults)
     # Decks list (CLI overrides config)
     decks = args.decks if args.decks else config.get("decks", [])
+    # Store decks in args so prompt builder can access them
+    args.decks = decks
     if not decks:
         print("Error: No decks specified.")
         print("Add 'decks' to auto_anki_config.json or use --decks flag.")

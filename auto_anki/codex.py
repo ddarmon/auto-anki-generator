@@ -943,7 +943,11 @@ def build_conversation_prompt(
         ],
     }
 
+    # Get available decks from args (set in main() from config or CLI)
+    available_decks = getattr(args, "decks", None) or []
+
     payload = {
+        "available_decks": available_decks,
         "candidate_conversations": conversations_payload,
         "output_contract": contract,
     }
@@ -954,6 +958,13 @@ def build_conversation_prompt(
         Do NOT wrap the JSON in ```json blocks.
 
         You are operating as the decision layer of an autonomous spaced-repetition agent.
+
+        ## Available Decks
+
+        You MUST assign each card to one of the following decks (use EXACT names):
+        {available_decks_list}
+
+        Choose the deck that best matches the card's subject matter.
 
         ## Conversation-Level Analysis
 
@@ -1103,6 +1114,13 @@ def build_conversation_prompt(
         YOUR ENTIRE RESPONSE MUST BE VALID, PARSEABLE JSON.
         """
     ).strip()
+
+    # Format the deck list for the instructions (use replace to avoid issues with other {})
+    if available_decks:
+        decks_formatted = "\n".join(f"- {deck}" for deck in available_decks)
+    else:
+        decks_formatted = "- (No decks specified - use your best judgment)"
+    instructions = instructions.replace("{available_decks_list}", decks_formatted)
 
     return instructions + "\n\n" + json.dumps(payload, indent=2, ensure_ascii=False)
 
