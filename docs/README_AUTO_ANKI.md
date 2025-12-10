@@ -494,7 +494,7 @@ For processing large backlogs of conversations, use the batch automation script:
 
 ### Features
 
-- **Usage-aware throttling** - Monitors Codex API usage and pauses when exceeding sustainable pace
+- **Usage-aware throttling** - Monitors LLM API usage (Codex or Claude) and pauses when exceeding sustainable pace
 - **Month-by-month processing** - Works backwards from current month (newest conversations first)
 - **Auto-advance** - Moves to next month when current month is exhausted
 - **Graceful shutdown** - Ctrl+C stops cleanly, logs final state
@@ -502,18 +502,21 @@ For processing large backlogs of conversations, use the batch automation script:
 
 ### How It Works
 
-1. Checks Codex 5h window usage via `scripts/codex-usage.sh`
-2. If usage exceeds pace + 10%, waits 15 minutes
-3. Runs `uv run auto-anki --date-range YYYY-MM --unprocessed-only --verbose`
-4. Shows progress via `uv run auto-anki-progress`
-5. When "No new conversations found", advances to previous month
-6. Loops indefinitely until manually stopped
+1. Detects configured LLM backend from `auto_anki_config.json` (`codex` or `claude-code`)
+2. Checks 5h window usage via appropriate script (`codex-usage.sh` or `claude-usage.sh`)
+3. If usage exceeds pace + 10%, waits 15 minutes
+4. Runs `uv run auto-anki --date-range YYYY-MM --unprocessed-only --verbose`
+5. Shows progress via `uv run auto-anki-progress`
+6. When "No new conversations found", advances to previous month
+7. Loops indefinitely until manually stopped
 
 ### Requirements
 
-- Codex CLI logged in (`~/.codex/auth.json` must exist)
+- LLM CLI logged in:
+  - For Codex: `~/.codex/auth.json` must exist
+  - For Claude Code: OAuth credentials in macOS keychain
 - Anki running with AnkiConnect plugin
-- `auto_anki_config.json` configured with your decks and `chat_root`
+- `auto_anki_config.json` configured with your decks, `chat_root`, and `llm_backend`
 
 ### Configuration
 

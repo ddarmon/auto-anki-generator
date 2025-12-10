@@ -29,11 +29,14 @@ exec 3>&1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CODEX_USAGE_SCRIPT="$SCRIPT_DIR/codex-usage.sh"
+CLAUDE_USAGE_SCRIPT="$SCRIPT_DIR/claude-usage.sh"
 
-# Verify codex-usage.sh exists
+# Verify usage scripts exist (warnings only - only the configured backend's script is required)
 if [[ ! -x "$CODEX_USAGE_SCRIPT" ]]; then
-    echo "Error: codex-usage.sh not found or not executable at $CODEX_USAGE_SCRIPT" >&2
-    exit 1
+    echo "Warning: codex-usage.sh not found at $CODEX_USAGE_SCRIPT" >&2
+fi
+if [[ ! -x "$CLAUDE_USAGE_SCRIPT" ]]; then
+    echo "Warning: claude-usage.sh not found at $CLAUDE_USAGE_SCRIPT" >&2
 fi
 
 # Throttling settings
@@ -90,6 +93,18 @@ log_message() {
     echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE" >&3
 }
 
+# Detect LLM backend from config file
+get_llm_backend() {
+    local config_file="$PROJECT_DIR/auto_anki_config.json"
+    if [[ -f "$config_file" ]]; then
+        local backend
+        backend=$(jq -r '.llm_backend // "codex"' "$config_file" 2>/dev/null)
+        echo "${backend:-codex}"
+    else
+        echo "codex"
+    fi
+}
+
 # Get codex usage info from the usage script
 # Returns: "pct pace" (integers) or empty string on error
 get_codex_usage() {
@@ -125,14 +140,66 @@ get_codex_usage() {
     echo "$pct $pace_int"
 }
 
+# Get Claude Code usage info from the usage script
+# Returns: "pct pace" (integers) or empty string on error
+get_claude_usage() {
+    local output
+    output=$("$CLAUDE_USAGE_SCRIPT" -v 2>&1)
+    if [[ $? -ne 0 ]]; then
+        echo ""
+        return 1
+    fi
+
+    local usage_line
+    usage_line=$(echo "$output" | grep "5-hour:")
+
+    if [[ -z "$usage_line" ]]; then
+        echo ""
+        return 1
+    fi
+
+    # Extract pct and pace (both are floats with %, truncate to int)
+    local pct pace
+    pct=$(echo "$usage_line" | sed -n 's/.*pct=\([0-9.]*\)%.*/\1/p')
+    pace=$(echo "$usage_line" | sed -n 's/.*pace=\([0-9.]*\)%.*/\1/p')
+
+    # Truncate to integers
+    local pct_int pace_int
+    pct_int=${pct%.*}
+    pace_int=${pace%.*}
+
+    if [[ -z "$pct_int" || -z "$pace_int" ]]; then
+        echo ""
+        return 1
+    fi
+
+    echo "$pct_int $pace_int"
+}
+
+# Get usage based on configured backend
+# Returns: "pct pace" (integers) or empty string on error
+get_usage() {
+    local backend
+    backend=$(get_llm_backend)
+
+    case "$backend" in
+        claude-code)
+            get_claude_usage
+            ;;
+        codex|*)
+            get_codex_usage
+            ;;
+    esac
+}
+
 # Check if we should wait based on usage threshold
 # Returns: 0 if OK to proceed, 1 if should wait
 check_usage_threshold() {
     local usage
-    usage=$(get_codex_usage)
+    usage=$(get_usage)
 
     if [[ -z "$usage" ]]; then
-        log_message "WARN" "Could not get codex usage, continuing without throttling"
+        log_message "WARN" "Could not get usage, continuing without throttling"
         return 0  # Continue without throttling
     fi
 
@@ -267,6 +334,7 @@ main() {
     log_message "INFO" "Starting auto-anki batch processing"
     log_message "INFO" "========================================"
     log_message "INFO" "Log file: $LOG_FILE"
+    log_message "INFO" "LLM Backend: $(get_llm_backend)"
     log_message "INFO" "Throttle: wait if usage > pace + ${PACE_BUFFER}%"
     log_message "INFO" "Wait duration: $((WAIT_DURATION / 60)) minutes"
     log_message "INFO" "Press Ctrl+C to stop gracefully"
