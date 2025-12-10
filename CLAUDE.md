@@ -393,6 +393,7 @@ Generates human-readable card preview.
     ├── launch_ui.sh                 # Launch script for review UI
     ├── scripts/                     # Automation scripts
     │   ├── auto_anki_batch.sh       # Batch processing with usage throttling
+    │   ├── estimate_completion.sh   # Estimate time to complete card generation
     │   ├── codex-usage.sh           # Codex API usage monitoring
     │   └── claude-usage.sh          # Claude Code API usage monitoring
     ├── CLAUDE.md                    # This file
@@ -691,6 +692,20 @@ This script:
 -   Waits 15 minutes when 5h window usage exceeds pace + 10%
 -   Auto-advances to next month when current month is exhausted
 -   Logs to `auto_anki_runs/batch_YYYYMMDD_HHMMSS.log`
+
+**Estimate time to completion:**
+
+``` bash
+./scripts/estimate_completion.sh    # Analyze most recent batch log
+./scripts/estimate_completion.sh path/to/batch.log  # Analyze specific log
+```
+
+This script parses batch log files to calculate:
+-   Overall progress (conversations done / total)
+-   Processing rate (conversations/hour)
+-   Estimated time remaining (hours/days)
+-   Recent rate (last ~10 runs) for comparison
+-   Estimated completion date/time
 
 ### Important Flags
 

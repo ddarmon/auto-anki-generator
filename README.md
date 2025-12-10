@@ -131,3 +131,13 @@ uv run auto-anki --llm-backend claude-code --verbose
 # Override model for a specific run
 uv run auto-anki --llm-model gpt-5.1 --verbose
 ```
+
+**Monitoring batch progress:**
+
+``` bash
+# View processing progress dashboard
+uv run auto-anki-progress
+
+# Estimate time to complete (analyzes batch log)
+./scripts/estimate_completion.sh
+```

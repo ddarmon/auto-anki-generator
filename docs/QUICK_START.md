@@ -36,6 +36,14 @@ uv run auto-anki-progress           # Show last 12 weeks
 uv run auto-anki-progress --weeks 24  # Show more history
 ```
 
+### Estimate Batch Completion Time
+
+```bash
+./scripts/estimate_completion.sh    # Analyze most recent batch log
+```
+
+Shows progress, processing rate, and estimated time to complete.
+
 ### Process Specific Month
 
 ```bash
@@ -165,6 +173,9 @@ collections/
 │       ├── base.py             # LLMBackend ABC, LLMConfig
 │       ├── codex.py            # Codex CLI backend
 │       └── claude_code.py      # Claude Code backend
+├── scripts/                    # Automation scripts
+│   ├── auto_anki_batch.sh      # Batch processing with throttling
+│   └── estimate_completion.sh  # Estimate time to complete
 ├── auto_anki_config.json       # Config (optional, includes llm_backend)
 ├── README_AUTO_ANKI.md         # Full documentation
 ├── QUICK_START.md              # This file

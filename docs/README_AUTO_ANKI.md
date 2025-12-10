@@ -529,6 +529,53 @@ END_YEAR=2022           # How far back to process
 END_MONTH=1
 ```
 
+### Estimate Time to Completion
+
+Monitor batch progress and estimate remaining time:
+
+```bash
+# Analyze most recent batch log
+./scripts/estimate_completion.sh
+
+# Analyze specific log file
+./scripts/estimate_completion.sh auto_anki_runs/batch_20251209_193717.log
+```
+
+**Sample output:**
+
+```
+Analyzing: batch_20251209_193717.log
+==========================================
+
+Progress Summary
+----------------
+Start time:              2025-12-09 19:37:23
+Latest time:             2025-12-10 07:41:19
+Conversations at start:  954 / 11088
+Conversations now:       1655 / 11088
+Progress:                14.9%
+
+Processing Rate
+---------------
+Elapsed time:            12.1 hours (43436 seconds)
+Conversations processed: 701
+Rate:                    58.0 conversations/hour
+                         0.96 conversations/minute
+
+Time Estimate
+-------------
+Conversations remaining: 9433
+Estimated time:          162.6 hours (6.8 days)
+Estimated completion:    2025-12-17 02:19
+
+Recent Rate (last ~10 runs)
+---------------------------
+Rate:                    227.2 conversations/hour
+Estimated time:          41.5 hours (1.7 days)
+```
+
+**Note:** The "Recent Rate" is typically higher than the overall rate because it excludes throttling pauses. Use it for a more accurate estimate of active processing time.
+
 ## Future Enhancements
 
 - [x] ~~Automatic HTML card import via AnkiConnect~~ ✅ **DONE!**
