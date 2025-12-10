@@ -77,7 +77,7 @@ The app will automatically open in your browser at `http://localhost:8000`.
 
 ### Review Workflow
 
-1. **Select a run** - Choose from recent Auto Anki Agent runs
+1. **Select a run** - Choose from Auto Anki Agent runs (use the "Show newest runs first" checkbox to toggle between reverse-chronological and chronological order)
 2. **Review cards** - Navigate through proposed cards
 3. **Make decisions**:
    - **Accept** ✓ - Mark card as good, move to next

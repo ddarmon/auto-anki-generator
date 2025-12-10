@@ -300,20 +300,57 @@ def _check_run_complete(run_dir: Path) -> bool:
         return False
 
 
-def find_recent_runs(base_dir: Path = Path("auto_anki_runs"), limit: int = 10) -> List[tuple]:
-    """Find recent run directories with completion status.
+def _parse_run_timestamp(run_dir: Path) -> Optional[datetime]:
+    """Parse the run timestamp from a run directory name.
 
-    Returns list of (run_path, is_complete) tuples.
+    Expects names like ``run-YYYYMMDD-HHMMSS``. Returns None if parsing fails.
+    """
+    name = run_dir.name
+    if not name.startswith("run-"):
+        return None
+    ts_str = name[len("run-") :]
+    try:
+        return datetime.strptime(ts_str, "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+
+
+def _run_sort_key(run_dir: Path) -> float:
+    """Return a sortable key for a run directory based on its timestamp."""
+    ts = _parse_run_timestamp(run_dir)
+    if ts is not None:
+        return ts.timestamp()
+    # Fallback to filesystem mtime if name doesn't match expected pattern
+    return run_dir.stat().st_mtime
+
+
+def list_runs_by_date(
+    base_dir: Path = Path("auto_anki_runs"),
+    limit: Optional[int] = None,
+    reverse: bool = True,
+) -> List[tuple]:
+    """List non-archived run directories with completion status.
+
+    Returns list of (run_path, is_complete) tuples, ordered by the timestamp
+    encoded in the run folder name (or filesystem mtime as a fallback). If
+    ``limit`` is provided, only the first ``limit`` runs are returned.
     """
     if not base_dir.exists():
         return []
 
-    run_dirs = [d for d in base_dir.iterdir()
-                if d.is_dir() and d.name.startswith('run-') and d.name != 'archived']
-    run_dirs.sort(reverse=True)
+    run_dirs = [
+        d
+        for d in base_dir.iterdir()
+        if d.is_dir() and d.name.startswith("run-") and d.name != "archived"
+    ]
+
+    run_dirs.sort(key=_run_sort_key, reverse=reverse)
+
+    if limit is not None:
+        run_dirs = run_dirs[:limit]
 
     results = []
-    for run_dir in run_dirs[:limit]:
+    for run_dir in run_dirs:
         is_complete = _check_run_complete(run_dir)
         results.append((run_dir, is_complete))
 
@@ -464,7 +501,12 @@ app_ui = ui.page_fluid(
                 "Select Run:",
                 choices={},
                 width="100%"
-            )
+            ),
+            ui.input_checkbox(
+                "run_order_desc",
+                "Show newest runs first",
+                value=True,
+            ),
         ),
         ui.column(4,
             ui.output_ui("run_info")
@@ -873,7 +915,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.Effect
     def _():
         # Populate active runs dropdown
-        runs = find_recent_runs()
+        runs = list_runs_by_date(reverse=input.run_order_desc())
         choices = {}
         for run_path, is_complete in runs:
             label = run_path.name
@@ -1630,7 +1672,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     def refresh_run_lists():
         """Refresh both active and archived run dropdowns."""
         # Refresh active runs
-        runs = find_recent_runs()
+        runs = list_runs_by_date(reverse=input.run_order_desc())
         choices = {}
         for run_path, is_complete in runs:
             label = run_path.name
