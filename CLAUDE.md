@@ -333,9 +333,10 @@ detection is handled post-generation via `enrich_cards_with_duplicate_flags()`.
 **Prompt structure:**
 
 1.  System instructions (Anki best practices + conversation analysis)
-2.  JSON contract specification (includes `conversation_id`, `turn_index`, `depends_on`)
-3.  Full conversations with all turns (enables learning journey analysis)
-4.  Output format requirements
+2.  Available decks list (from config, LLM must use exact deck names)
+3.  JSON contract specification (includes `conversation_id`, `turn_index`, `depends_on`)
+4.  Full conversations with all turns (enables learning journey analysis)
+5.  Output format requirements
 
 **LLM capabilities enabled by conversation context:**
 
@@ -500,9 +501,9 @@ Generates human-readable card preview.
 **Sections to modify:**
 
 -   **System instructions**: Anki best practices, card quality rules
+-   **Available decks**: List of valid deck names from config (LLM must use exact names)
 -   **Contract specification**: JSON schema for LLM response
 -   **Examples**: Few-shot learning examples (currently inline)
--   **Existing cards format**: How cards are presented for dedup
 
 **Best practices:**
 
@@ -1045,7 +1046,7 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 
 ------------------------------------------------------------------------
 
-**Last updated**: 2025-12-08
+**Last updated**: 2025-12-09
 
 **Project status**: Production-ready with conversation-level processing,
 semantic deduplication, two-stage pipeline, parallel execution, interactive review UI,
@@ -1066,6 +1067,10 @@ TUI progress dashboard, **pluggable LLM backends**, and **post-generation duplic
     -   Per-backend, per-stage model configuration
     -   CLI: `--llm-backend`, `--llm-model`, `--llm-model-stage1/2`
     -   Config: `llm_backend` and `llm_config` in `auto_anki_config.json`
+-   **Backend-aware batch throttling** (`scripts/auto_anki_batch.sh`)
+    -   Detects `llm_backend` from config (`codex` or `claude-code`)
+    -   Uses appropriate usage script (`codex-usage.sh` or `claude-usage.sh`)
+-   **Deck list in prompts** - LLM now receives available deck names from config
 -   TUI progress dashboard (`auto-anki-progress`) with weekly stats, streak tracking
 -   Heuristics OFF by default - LLM-only filtering via Stage 1
 -   Stage 1 receives full conversations (not truncated)
