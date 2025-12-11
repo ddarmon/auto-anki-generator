@@ -633,10 +633,17 @@ def main() -> None:
         print(f"Harvested {len(conversations)} conversations ({total_turns} total turns) before pruning.")
 
     # Prune conversations against existing cards
-    conversations = prune_conversations(conversations, cards, args)
+    conversations, skipped_duplicate_ids = prune_conversations(conversations, cards, args)
     if args.verbose:
         total_turns = sum(len(c.turns) for c in conversations)
         print(f"{len(conversations)} conversations ({total_turns} turns) remain after dedup.")
+
+    # Track skipped duplicates in state so they aren't re-processed on next run
+    if skipped_duplicate_ids:
+        state_tracker.add_conversation_ids(skipped_duplicate_ids)
+        state_tracker.save()
+        if args.verbose:
+            print(f"  Marked {len(skipped_duplicate_ids)} duplicate conversations as seen in state.")
 
     if not conversations:
         print("No new conversations found; exiting.")

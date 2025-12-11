@@ -510,7 +510,7 @@ def prune_conversations(
     conversations: List[Conversation],
     cards: List[Card],
     args: Any,
-) -> List[Conversation]:
+) -> Tuple[List[Conversation], List[str]]:
     """Filter conversations, marking turns that are already covered by existing cards.
 
     Unlike per-turn deduplication, this:
@@ -524,9 +524,12 @@ def prune_conversations(
         args: CLI arguments namespace
 
     Returns:
-        List of Conversation objects with duplicate_turns annotation
+        Tuple of:
+        - List of Conversation objects with duplicate_turns annotation
+        - List of conversation IDs that were skipped as duplicates (for state tracking)
     """
     pruned: List[Conversation] = []
+    skipped_duplicate_ids: List[str] = []
     total = len(conversations)
 
     # Build semantic index if needed
@@ -581,6 +584,7 @@ def prune_conversations(
                 print(
                     f"  Skipping conversation {idx}: all {len(conv.turns)} turns are duplicates"
                 )
+            skipped_duplicate_ids.append(conv.conversation_id)
             continue
 
         # Annotate the conversation with duplicate turn info
@@ -598,7 +602,7 @@ def prune_conversations(
             f"  Checked {total} conversations - {dup_count} fully duplicate, {len(pruned)} kept"
         )
 
-    return pruned
+    return pruned, skipped_duplicate_ids
 
 
 def enrich_cards_with_duplicate_flags(
