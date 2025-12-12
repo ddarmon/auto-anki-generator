@@ -490,6 +490,8 @@ For processing large backlogs of conversations, use the batch automation script:
 ```bash
 ./scripts/auto_anki_batch.sh
 # Press Ctrl+C to stop gracefully
+# macOS: allow sleep (disable caffeinate)
+# PREVENT_SLEEP=0 ./scripts/auto_anki_batch.sh
 ```
 
 ### Features
@@ -498,13 +500,14 @@ For processing large backlogs of conversations, use the batch automation script:
 - **Month-by-month processing** - Works backwards from current month (newest conversations first)
 - **Auto-advance** - Moves to next month when current month is exhausted
 - **Graceful shutdown** - Ctrl+C stops cleanly, logs final state
+- **Sleep prevention (macOS)** - Prevents idle sleep while running (uses `caffeinate`, disable with `PREVENT_SLEEP=0`)
 - **Comprehensive logging** - All output saved to `auto_anki_runs/batch_*.log`
 
 ### How It Works
 
 1. Detects configured LLM backend from `auto_anki_config.json` (`codex` or `claude-code`)
 2. Checks 5h window usage via appropriate script (`codex-usage.sh` or `claude-usage.sh`)
-3. If usage exceeds pace + 10%, waits 15 minutes
+3. If usage exceeds pace + 10%, waits 15 minutes (wall-clock)
 4. Runs `uv run auto-anki --date-range YYYY-MM --unprocessed-only --verbose`
 5. Shows progress via `uv run auto-anki-progress`
 6. When "No new conversations found", advances to previous month
@@ -525,6 +528,7 @@ Edit `scripts/auto_anki_batch.sh` to customize:
 ```bash
 PACE_BUFFER=10          # Wait threshold: pace + this value (%)
 WAIT_DURATION=900       # Wait time in seconds (default: 15 min)
+PREVENT_SLEEP=1         # macOS: prevent idle sleep (disable with PREVENT_SLEEP=0)
 END_YEAR=2022           # How far back to process
 END_MONTH=1
 ```

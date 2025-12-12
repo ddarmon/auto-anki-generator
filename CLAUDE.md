@@ -683,13 +683,16 @@ uv run auto-anki-progress --json    # Machine-readable output
 
 ``` bash
 ./scripts/auto_anki_batch.sh        # Run indefinitely, Ctrl+C to stop
+# macOS: allow sleep (disable caffeinate)
+# PREVENT_SLEEP=0 ./scripts/auto_anki_batch.sh
 ```
 
 This script:
 -   Runs `auto-anki` in a loop, working backwards through months (newest first)
 -   Detects LLM backend from `auto_anki_config.json` (`codex` or `claude-code`)
 -   Monitors API usage via the appropriate script (`codex-usage.sh` or `claude-usage.sh`)
--   Waits 15 minutes when 5h window usage exceeds pace + 10%
+-   Waits 15 minutes (wall-clock) when 5h window usage exceeds pace + 10%
+-   Prevents idle sleep on macOS while running (uses `caffeinate`, disable with `PREVENT_SLEEP=0`)
 -   Auto-advances to next month when current month is exhausted
 -   Logs to `auto_anki_runs/batch_YYYYMMDD_HHMMSS.log`
 
@@ -1085,6 +1088,7 @@ TUI progress dashboard, **pluggable LLM backends**, and **post-generation duplic
 -   **Backend-aware batch throttling** (`scripts/auto_anki_batch.sh`)
     -   Detects `llm_backend` from config (`codex` or `claude-code`)
     -   Uses appropriate usage script (`codex-usage.sh` or `claude-usage.sh`)
+    -   Prevents idle sleep on macOS by default (disable with `PREVENT_SLEEP=0`)
 -   **Deck list in prompts** - LLM now receives available deck names from config
 -   TUI progress dashboard (`auto-anki-progress`) with weekly stats, streak tracking
 -   Heuristics OFF by default - LLM-only filtering via Stage 1

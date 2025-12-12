@@ -7,6 +7,7 @@
 #
 # Usage:
 #   ./scripts/auto_anki_batch.sh
+#   PREVENT_SLEEP=0 ./scripts/auto_anki_batch.sh   # don't inhibit sleep (macOS)
 #   Press Ctrl+C to stop gracefully
 #
 # Requirements:
@@ -42,6 +43,7 @@ fi
 # Throttling settings
 PACE_BUFFER=10          # Wait if usage% > pace% + PACE_BUFFER
 WAIT_DURATION=900       # 15 minutes in seconds
+PREVENT_SLEEP=${PREVENT_SLEEP:-1}  # macOS: use caffeinate to prevent idle sleep while running
 
 # Retry settings
 MAX_RETRIES=3
@@ -65,6 +67,7 @@ LOG_FILE="$LOG_DIR/batch_$(date +%Y%m%d_%H%M%S).log"
 current_month=""
 month_index=0
 declare -a MONTHS
+SLEEP_INHIBITOR_PID=""
 
 # =============================================================================
 # Signal Handling
@@ -76,14 +79,54 @@ cleanup() {
     log_message "INFO" "Last processed month: $current_month"
     log_message "INFO" "Run 'uv run auto-anki-progress' to see current status"
     log_message "INFO" "Log file saved to: $LOG_FILE"
+    stop_sleep_inhibitor || true
     exit 0
 }
 
 trap cleanup SIGINT SIGTERM
+trap 'stop_sleep_inhibitor || true' EXIT
 
 # =============================================================================
 # Utility Functions
 # =============================================================================
+
+start_sleep_inhibitor() {
+    if [[ "${PREVENT_SLEEP}" != "1" ]]; then
+        return 0
+    fi
+
+    if [[ "$(uname -s)" == "Darwin" ]] && command -v caffeinate >/dev/null 2>&1; then
+        caffeinate -i -w $$ &
+        SLEEP_INHIBITOR_PID=$!
+        log_message "INFO" "Preventing sleep via caffeinate (pid $SLEEP_INHIBITOR_PID)"
+    fi
+}
+
+stop_sleep_inhibitor() {
+    if [[ -n "${SLEEP_INHIBITOR_PID}" ]] && kill -0 "${SLEEP_INHIBITOR_PID}" 2>/dev/null; then
+        kill "${SLEEP_INHIBITOR_PID}" 2>/dev/null || true
+        wait "${SLEEP_INHIBITOR_PID}" 2>/dev/null || true
+    fi
+    SLEEP_INHIBITOR_PID=""
+}
+
+sleep_wall_clock() {
+    local seconds="$1"
+    local deadline=$(( $(date +%s) + seconds ))
+    while true; do
+        local now
+        now=$(date +%s)
+        if (( now >= deadline )); then
+            return 0
+        fi
+        local remaining=$(( deadline - now ))
+        local chunk=60
+        if (( remaining < chunk )); then
+            chunk=$remaining
+        fi
+        sleep "$chunk"
+    done
+}
 
 log_message() {
     local level="$1"
@@ -228,7 +271,7 @@ wait_for_pace() {
     while ! check_usage_threshold; do
         local wait_min=$((WAIT_DURATION / 60))
         log_message "INFO" "Waiting $wait_min minutes for usage to decrease..."
-        sleep "$WAIT_DURATION"
+        sleep_wall_clock "$WAIT_DURATION"
     done
 }
 
@@ -340,6 +383,8 @@ main() {
     log_message "INFO" "Press Ctrl+C to stop gracefully"
     log_message "INFO" "========================================"
 
+    start_sleep_inhibitor
+
     # Generate list of months
     generate_months
     local total_months=${#MONTHS[@]}
@@ -389,7 +434,7 @@ main() {
         log_message "INFO" "Completed run for $current_month"
 
         # Small delay between runs
-        sleep 5
+        sleep_wall_clock 5
     done
 }
 
