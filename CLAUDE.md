@@ -375,6 +375,7 @@ Generates human-readable card preview.
     │   ├── codex.py                 # Prompt builders, two-stage pipeline, parsing
     │   ├── state.py                 # StateTracker, run directory helpers
     │   ├── progress.py              # TUI progress dashboard (`auto-anki-progress`)
+    │   ├── import_conversations.py  # Import ChatGPT/Claude JSON (`auto-anki-import`)
     │   └── llm_backends/            # Pluggable LLM backend abstraction
     │       ├── __init__.py          # Registry: get_backend(), list_backends()
     │       ├── base.py              # LLMBackend ABC, LLMConfig, LLMResponse
@@ -387,7 +388,8 @@ Generates human-readable card preview.
     │   ├── test_parsing.py          # Tests for parse_chat_entries, extract_turns
     │   ├── test_date_filter.py      # Tests for DateRangeFilter
     │   ├── test_dedup.py            # Tests for is_duplicate_context
-    │   └── test_llm_backends.py     # Tests for LLM backend abstraction
+    │   ├── test_llm_backends.py     # Tests for LLM backend abstraction
+    │   └── test_import.py           # Tests for import_conversations module
     ├── anki_review_ui.py            # Interactive review UI (Shiny app, 1050+ lines)
     ├── anki_connect.py              # AnkiConnect HTTP client (437 lines)
     ├── launch_ui.sh                 # Launch script for review UI
@@ -678,6 +680,26 @@ uv run auto-anki-progress           # Show last 12 weeks
 uv run auto-anki-progress --weeks 24  # Show more history
 uv run auto-anki-progress --json    # Machine-readable output
 ```
+
+**Import ChatGPT/Claude conversations.json:**
+
+``` bash
+# Import conversations.json to markdown directory (creates/updates chat_root)
+uv run auto-anki-import ~/Downloads/conversations.json
+
+# Import with verbose output
+uv run auto-anki-import ~/Downloads/conversations.json -v
+
+# Import to custom directory
+uv run auto-anki-import ~/Downloads/conversations.json -o ~/chatgpt-archive
+
+# Import and immediately run card generation
+uv run auto-anki-import ~/Downloads/conversations.json --run
+```
+
+This converts the raw JSON export from ChatGPT or Claude into the markdown format
+expected by `auto-anki`. Supports incremental updates (only writes changed files),
+parallel processing, and auto-detects ChatGPT vs Claude format.
 
 **Automated batch processing with usage throttling:**
 
@@ -1064,15 +1086,23 @@ See `FUTURE_DIRECTIONS.md` for detailed proposals with code examples.
 
 ------------------------------------------------------------------------
 
-**Last updated**: 2025-12-09
+**Last updated**: 2025-12-12
 
 **Project status**: Production-ready with conversation-level processing,
 semantic deduplication, two-stage pipeline, parallel execution, interactive review UI,
-TUI progress dashboard, **pluggable LLM backends**, and **post-generation duplicate detection**.
+TUI progress dashboard, **pluggable LLM backends**, **post-generation duplicate detection**,
+and **JSON import from ChatGPT/Claude**.
 
-**Current version**: Modular Python package with CLI entrypoints (`auto-anki`, `auto-anki-progress`)
+**Current version**: Modular Python package with CLI entrypoints (`auto-anki`, `auto-anki-import`, `auto-anki-progress`)
 
 **Recent additions**:
+-   **Conversation import from JSON** (`auto_anki/import_conversations.py`)
+    -   New CLI: `auto-anki-import ~/Downloads/conversations.json`
+    -   Converts ChatGPT or Claude `conversations.json` to markdown format
+    -   Auto-detects format (ChatGPT vs Claude)
+    -   Incremental updates (only writes changed files)
+    -   Parallel processing with ThreadPoolExecutor
+    -   Optional `--run` flag to chain into card generation
 -   **Post-generation duplicate detection** (`auto_anki/dedup.py`)
     -   Semantic similarity against FULL existing card database (not truncated sample)
     -   `DuplicateFlags` and `DuplicateMatch` dataclasses

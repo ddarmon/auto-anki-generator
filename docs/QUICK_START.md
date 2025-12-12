@@ -2,6 +2,17 @@
 
 ## Daily Workflow
 
+### 0. Import New Conversations (If Needed)
+
+If you've exported new conversations from ChatGPT or Claude:
+
+```bash
+# Import conversations.json to your markdown directory
+uv run auto-anki-import ~/Downloads/conversations.json -v
+```
+
+This converts the JSON export into markdown files that auto-anki can process.
+
 ### 1. Process New Conversations (Recommended)
 
 ```bash
@@ -28,6 +39,19 @@ Or open in your text editor to review and select cards to import.
 Manually copy/paste cards you want to keep from the markdown file into your Anki HTML collections or import dialog.
 
 ## Common Commands
+
+### Import Conversations from ChatGPT/Claude
+
+```bash
+# Basic import
+uv run auto-anki-import ~/Downloads/conversations.json
+
+# Import and immediately generate cards
+uv run auto-anki-import ~/Downloads/conversations.json --run
+
+# Show all import options
+uv run auto-anki-import --help
+```
 
 ### View Processing Progress
 
@@ -169,6 +193,7 @@ collections/
 │   ├── dedup.py                # Deduplication
 │   ├── state.py                # State tracking (v2 schema)
 │   ├── progress.py             # TUI progress dashboard
+│   ├── import_conversations.py # Import ChatGPT/Claude JSON exports
 │   └── llm_backends/           # Pluggable LLM backend abstraction
 │       ├── base.py             # LLMBackend ABC, LLMConfig
 │       ├── codex.py            # Codex CLI backend

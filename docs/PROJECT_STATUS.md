@@ -420,7 +420,14 @@ These are documented in FUTURE_DIRECTIONS.md with detailed proposals.
    - CLI: `--llm-backend`, `--llm-model-stage1/2`
    - Config: `llm_backend` and `llm_config` in `auto_anki_config.json`
 
-5. **Cloze Card Support**
+5. ~~**Conversation JSON Import**~~ ✅ **DONE!**
+   - New CLI: `auto-anki-import` for importing ChatGPT/Claude exports
+   - Auto-detects format (ChatGPT vs Claude)
+   - Incremental updates (only writes changed files)
+   - Parallel processing with ThreadPoolExecutor
+   - Optional `--run` flag to chain into card generation
+
+6. **Cloze Card Support**
    - Detect cloze-worthy content
    - Generate cloze deletion cards
    - Support Anki cloze syntax

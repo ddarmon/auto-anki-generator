@@ -11,6 +11,7 @@ dependencies = [
 
 [project.scripts]
 auto-anki = "auto_anki.cli:main"
+auto-anki-import = "auto_anki.import_conversations:main"
 auto-anki-progress = "auto_anki.progress:main"
 
 [build-system]

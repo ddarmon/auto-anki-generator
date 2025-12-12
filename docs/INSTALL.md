@@ -67,6 +67,9 @@ auto-anki --date-range 2025-10 --max-contexts 20 --verbose
 ### Quick Commands
 
 ```bash
+# Import conversations from ChatGPT/Claude export
+uv run auto-anki-import ~/Downloads/conversations.json -v
+
 # Daily run (unprocessed only)
 uv run auto-anki --unprocessed-only --verbose
 
@@ -78,6 +81,7 @@ uv run auto-anki --date-range 2025-10 --max-contexts 5 --dry-run
 
 # Show all options
 uv run auto-anki --help
+uv run auto-anki-import --help
 ```
 
 ## Performance Improvements
@@ -98,6 +102,8 @@ After setup:
 collections/
 ├── auto_anki_agent.py          # Main script
 ├── auto_anki/                  # Core Python package
+│   ├── import_conversations.py # Import ChatGPT/Claude JSON
+│   └── ...                     # Other modules
 ├── pyproject.toml              # Package config
 ├── auto_anki_config.json       # Your configuration
 ├── .deck_cache/                # Card + embedding cache (auto-created)
@@ -172,7 +178,7 @@ uv run pytest --cov=auto_anki --cov-report=term-missing
 uv run pytest tests/test_scoring.py -v
 ```
 
-**97 tests** cover core functions: scoring, normalization, parsing, date filtering, and deduplication.
+**180 tests** cover core functions: scoring, normalization, parsing, date filtering, deduplication, LLM backends, and conversation import.
 
 ## Uninstall
 

@@ -6,9 +6,53 @@ An agentic pipeline that automatically generates Anki flashcards from ChatGPT co
 
 1. **State Tracking**: Tracks processed conversation files to avoid reprocessing
 2. **Date Range Filtering**: Process conversations from specific time periods
-3. **Markdown Output**: Generate human-readable markdown files for review
+3. **Markdown Output**: Generate human-readable Markdown files for review
 4. **Enhanced Deduplication**: Better HTML parsing with full card content extraction
 5. **Anki Best Practices**: Codex prompt includes comprehensive flashcard design guidelines
+6. **JSON Import**: Import ChatGPT/Claude `conversations.json` exports directly
+
+## Importing Conversations
+
+Before generating cards, you need conversation files in Markdown format. The `auto-anki-import` command converts raw JSON exports from ChatGPT or Claude into the expected format.
+
+### Export from ChatGPT/Claude
+
+1. **ChatGPT**: Go to Settings → Data controls → Export data
+2. **Claude**: Go to Settings → Export conversations
+
+You'll receive a `conversations.json` file containing all your conversations.
+
+### Import to Markdown
+
+```bash
+# Basic import (outputs to configured chat_root)
+uv run auto-anki-import ~/Downloads/conversations.json
+
+# Import with verbose output
+uv run auto-anki-import ~/Downloads/conversations.json -v
+
+# Import to custom directory
+uv run auto-anki-import ~/Downloads/conversations.json -o ~/chatgpt-archive
+
+# Import and immediately generate cards
+uv run auto-anki-import ~/Downloads/conversations.json --run
+```
+
+**Features:**
+- Auto-detects ChatGPT vs Claude format
+- Incremental updates (only writes changed files)
+- Creates nested directory structure: `year/month/day/YYYY-MM-DD_slug.md`
+- Sets file timestamps to conversation creation date
+- Parallel processing for speed
+
+### Import Options
+
+- `JSON_PATH`: Path to conversations.json file (required)
+- `-o, --output PATH`: Output directory (default: `chat_root` from config)
+- `--base-url URL`: Base URL for conversation links (auto-detected)
+- `--workers N`: Parallel worker threads (default: auto)
+- `-v, --verbose`: Show progress during export
+- `--run`: Run auto-anki after import completes
 
 ## Basic Usage
 
@@ -17,7 +61,7 @@ An agentic pipeline that automatically generates Anki flashcards from ChatGPT co
 ```bash
 python3 auto_anki_agent.py \
   --date-range 2025-10 \
-  --output-format markdown \
+  --output-format Markdown \
   --verbose
 ```
 
@@ -47,7 +91,7 @@ python3 auto_anki_agent.py \
   - Format: `2025-10` (entire month)
   - Format: `2025-10-01:2025-10-31` (specific range)
 - `--unprocessed-only`: Only process files not yet in state file
-- `--output-format {json,markdown,both}`: Choose output format (default: both)
+- `--output-format {json,Markdown,both}`: Choose output format (default: both)
 - `--chat-root PATH`: Root directory containing conversation files
 - `--decks DECK [DECK ...]`: Anki deck names to load existing cards from (overrides config)
 - `--anki-cache-ttl MINUTES`: Cache TTL for AnkiConnect card fetch (default: 5)
@@ -213,7 +257,7 @@ Tracks:
    - Corrections in later turns
    - Topic evolution across turns
 8. **Codex generates** proposed cards linked to specific turns
-9. **Outputs** markdown and/or JSON for review
+9. **Outputs** Markdown and/or JSON for review
 10. **Updates state** to track processed conversations
 
 **Note**: Heuristic scoring (`--use-filter-heuristics`) is optional and disabled by default. The Stage 1 LLM now handles quality filtering directly.
@@ -297,7 +341,7 @@ python3 auto_anki_agent.py \
 
 1. **Start with `--dry-run`**: Preview prompts before spending tokens
 2. **Use `--verbose`**: See what's happening under the hood
-3. **Review markdown output**: Easier to scan than JSON
+3. **Review Markdown output**: Easier to scan than JSON
 4. **Use heuristic filtering** (optional): Add `--use-filter-heuristics` and `--min-score` for pre-LLM filtering
 5. **Control deduplication**:
    - **Default**: Hybrid mode (semantic + string) - automatically falls back to string if dependencies unavailable

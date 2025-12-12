@@ -10,10 +10,13 @@ review UI with direct AnkiConnect integration.
 # 1. Install (from repo root)
 uv pip install -e ".[ui,semantic]"
 
-# 2. Generate cards from new conversations
+# 2. Import conversations from ChatGPT/Claude export (creates markdown files)
+uv run auto-anki-import ~/Downloads/conversations.json
+
+# 3. Generate cards from new conversations
 uv run auto-anki --unprocessed-only --verbose
 
-# 3. Review and import to Anki in the browser
+# 4. Review and import to Anki in the browser
 ./launch_ui.sh
 ```
 
@@ -73,7 +76,9 @@ pip install -e ".[ui,semantic]"
 
 This installs:
 
--   The `auto-anki` console script
+-   The `auto-anki` console script (generate flashcards)
+-   The `auto-anki-import` console script (import ChatGPT/Claude JSON exports)
+-   The `auto-anki-progress` console script (view processing progress)
 -   Core dependencies (BeautifulSoup, json-repair)
 -   Optional extras:
     -   `ui` -- Shiny UI + plotting for interactive review
@@ -130,6 +135,19 @@ uv run auto-anki --llm-backend claude-code --verbose
 
 # Override model for a specific run
 uv run auto-anki --llm-model gpt-5.1 --verbose
+```
+
+**Importing ChatGPT/Claude conversation exports:**
+
+``` bash
+# Import conversations.json to markdown directory
+uv run auto-anki-import ~/Downloads/conversations.json
+
+# Import with verbose output
+uv run auto-anki-import ~/Downloads/conversations.json -v
+
+# Import and immediately generate cards
+uv run auto-anki-import ~/Downloads/conversations.json --run
 ```
 
 **Monitoring batch progress:**
