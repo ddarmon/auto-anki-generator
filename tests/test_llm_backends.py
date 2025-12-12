@@ -27,7 +27,7 @@ class TestLLMConfig:
         assert config.model is None
         assert config.reasoning_effort is None
         assert config.extra_args == []
-        assert config.timeout_ms == 120000
+        assert config.timeout_ms == 600000
 
     def test_custom_values(self):
         """LLMConfig should accept custom values."""
