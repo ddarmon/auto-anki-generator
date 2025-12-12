@@ -417,47 +417,73 @@ def parse_codex_response_robust(
     raw_path = run_dir / f"codex{label}_raw_response_chunk_{chunk_idx:02d}.txt"
     raw_path.write_text(response_text)
 
-    strategies: List[tuple[str, str]] = []
+    def strip_markdown_fences(text: str) -> str:
+        cleaned = text.strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        return cleaned.strip()
 
-    # Strategy 1: Direct parse
-    strategies.append(("Direct parse", response_text.strip()))
+    def raw_decode_first_json(text: str) -> Any:
+        decoder = json.JSONDecoder()
+        last_error: Optional[Exception] = None
+        for start, ch in enumerate(text):
+            if ch not in ("{", "["):
+                continue
+            try:
+                obj, _ = decoder.raw_decode(text[start:])
+                return obj
+            except json.JSONDecodeError as e:
+                last_error = e
+                continue
+        raise last_error or json.JSONDecodeError("No JSON object found", text, 0)
 
-    # Strategy 2: Strip markdown fences
-    cleaned = response_text.strip()
-    if cleaned.startswith("```json"):
-        cleaned = cleaned[7:]
-    elif cleaned.startswith("```"):
-        cleaned = cleaned[3:]
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3]
-    cleaned = cleaned.strip()
-    strategies.append(("Markdown stripped", cleaned))
+    cleaned = strip_markdown_fences(response_text)
+    raw = response_text.strip()
 
-    # Strategy 3: Use json-repair library
+    strategies: List[tuple[str, Any]] = []
+
+    # Strategy 1: Direct parse (only when the response already looks like JSON).
+    if raw[:1] in ("{", "["):
+        strategies.append(("Direct parse", lambda: json.loads(raw)))
+
+    # Strategy 2: Strip markdown fences (common when LLM wraps JSON in ```json blocks).
+    strategies.append(("Markdown stripped", lambda: json.loads(cleaned)))
+
+    # Strategy 3: Extract a JSON value from a response with extra leading/trailing text.
+    strategies.append(("JSON extracted", lambda: raw_decode_first_json(cleaned)))
+
+    # Strategy 4: Use json-repair library (last resort).
     try:
         repaired = repair_json(cleaned)
-        strategies.append(("JSON repair", repaired))
+        strategies.append(("JSON repair", lambda: json.loads(repaired)))
     except Exception:
         pass  # json-repair failed, skip this strategy
 
     last_error: Optional[Exception] = None
 
     # Try each strategy
-    for strategy_name, text in strategies:
+    for strategy_name, strategy in strategies:
         try:
-            result = json.loads(text)
+            result = strategy()
             if verbose:
                 print(f"  ✓ Parsed with strategy: {strategy_name}")
             # Save the working version
             (run_dir / f"codex{label}_parsed_response_chunk_{chunk_idx:02d}.json").write_text(
                 json.dumps(result, indent=2)
             )
-            return result
-        except json.JSONDecodeError as e:
+            if isinstance(result, dict):
+                return result
+            return None
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
             last_error = e
-            if verbose:
-                print(f"  ✗ {strategy_name} failed: {e}")
             continue
+
+    if verbose:
+        print(f"  ✗ Failed to parse JSON response: {last_error or 'Unknown error'}")
 
     # All strategies failed - save debug info
     error_file = run_dir / f"codex{label}_FAILED_chunk_{chunk_idx:02d}.txt"
