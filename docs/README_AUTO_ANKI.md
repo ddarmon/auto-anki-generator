@@ -6,7 +6,7 @@ An agentic pipeline that automatically generates Anki flashcards from ChatGPT co
 
 1. **State Tracking**: Tracks processed conversation files to avoid reprocessing
 2. **Date Range Filtering**: Process conversations from specific time periods
-3. **Markdown Output**: Generate human-readable Markdown files for review
+3. **Review-Ready JSON Output**: Generates `all_proposed_cards.json` for the review UI
 4. **Enhanced Deduplication**: Better HTML parsing with full card content extraction
 5. **Anki Best Practices**: Codex prompt includes comprehensive flashcard design guidelines
 6. **JSON Import**: Import ChatGPT/Claude `conversations.json` exports directly
@@ -61,7 +61,6 @@ uv run auto-anki-import ~/Downloads/conversations.json --run
 ```bash
 python3 auto_anki_agent.py \
   --date-range 2025-10 \
-  --output-format Markdown \
   --verbose
 ```
 
@@ -70,7 +69,6 @@ python3 auto_anki_agent.py \
 ```bash
 python3 auto_anki_agent.py \
   --unprocessed-only \
-  --output-format both \
   --verbose
 ```
 
@@ -91,7 +89,6 @@ python3 auto_anki_agent.py \
   - Format: `2025-10` (entire month)
   - Format: `2025-10-01:2025-10-31` (specific range)
 - `--unprocessed-only`: Only process files not yet in state file
-- `--output-format {json,Markdown,both}`: Choose output format (default: both)
 - `--chat-root PATH`: Root directory containing conversation files
 - `--decks DECK [DECK ...]`: Anki deck names to load existing cards from (overrides config)
 - `--anki-cache-ttl MINUTES`: Cache TTL for AnkiConnect card fetch (default: 5)
@@ -204,26 +201,23 @@ Example `auto_anki_config.json`:
 
 ## Output Files
 
-### Markdown Output (for review)
+Markdown exports have been retired. Review happens via the Shiny UI and JSON artifacts.
 
-```
-auto_anki_runs/proposed_cards_2025-11-08.md
-```
-
-Human-readable format with:
-- Card front/back
-- Deck assignment
-- Tags and confidence scores
-- Source conversation metadata
-- Notes on why each card was created
-
-### JSON Output (for automation)
+### Proposed Cards (JSON)
 
 ```
 auto_anki_runs/run-TIMESTAMP/all_proposed_cards.json
 ```
 
-Structured format for potential automated import.
+Structured format for the Shiny review UI and any automation.
+
+### Accepted Cards Export (from UI)
+
+```
+auto_anki_runs/run-TIMESTAMP/accepted_cards_YYYYMMDD-HHMMSS.json
+```
+
+Contains only accepted/edited cards ready for Anki import.
 
 ### State File
 
@@ -257,7 +251,7 @@ Tracks:
    - Corrections in later turns
    - Topic evolution across turns
 8. **Codex generates** proposed cards linked to specific turns
-9. **Outputs** Markdown and/or JSON for review
+9. **Outputs** JSON for review (`all_proposed_cards.json`)
 10. **Updates state** to track processed conversations
 
 **Note**: Heuristic scoring (`--use-filter-heuristics`) is optional and disabled by default. The Stage 1 LLM now handles quality filtering directly.
@@ -341,7 +335,7 @@ python3 auto_anki_agent.py \
 
 1. **Start with `--dry-run`**: Preview prompts before spending tokens
 2. **Use `--verbose`**: See what's happening under the hood
-3. **Review Markdown output**: Easier to scan than JSON
+3. **Review in the Shiny UI**: Launch `./launch_ui.sh` to triage `all_proposed_cards.json`
 4. **Use heuristic filtering** (optional): Add `--use-filter-heuristics` and `--min-score` for pre-LLM filtering
 5. **Control deduplication**:
    - **Default**: Hybrid mode (semantic + string) - automatically falls back to string if dependencies unavailable
@@ -430,7 +424,7 @@ rm .auto_anki_agent_state.json
         │
         ▼
 ┌──────────────────┐
-│  Format Output   │  ← Markdown/JSON
+│  Write JSON      │  ← all_proposed_cards.json
 │  Update State    │  ← Track seen_conversations
 └──────────────────┘
 ```

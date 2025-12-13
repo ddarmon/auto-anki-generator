@@ -46,7 +46,7 @@ Start studying! 🎓
 - **Pluggable LLM backends**: Codex CLI or Claude Code
 - Two-stage LLM pipeline: fast filter → parallel card generation
 - Uses LLM to generate high-quality flashcards
-- Outputs proposed cards to JSON and Markdown
+- Outputs proposed cards to JSON
 
 **Note**: Heuristic scoring is optional (`--use-filter-heuristics`). By default, the Stage 1 LLM judges quality directly.
 
@@ -206,7 +206,7 @@ Start studying! 🎓
 - ✅ Automatic fallback to string-based if dependencies unavailable
 - ✅ Three dedup modes: string, semantic, hybrid
 - ✅ LLM-based intelligent generation
-- ✅ JSON and Markdown output
+- ✅ JSON output for review UI
 
 **Interactive UI:**
 - ✅ 4 review actions (Accept/Reject/Edit/Skip)
@@ -309,7 +309,7 @@ python3 auto_anki_agent.py --unprocessed-only --verbose
 - Hybrid deduplication (semantic + string, default)
 - Auto-fallback to string-only if dependencies unavailable
 - LLM generation
-- JSON/Markdown output
+- JSON output
 
 ✅ **Review UI**
 - Shiny app launches successfully

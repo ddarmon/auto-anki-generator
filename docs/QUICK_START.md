@@ -22,21 +22,23 @@ python3 auto_anki_agent.py --unprocessed-only --verbose
 
 This will:
 - ✅ Only process conversations not yet in state file
-- ✅ Generate Markdown output for review
+- ✅ Generate proposed cards JSON for review
 - ✅ Update state to prevent reprocessing
 - ✅ Show progress with verbose output
 
 ### 2. Review Proposed Cards
 
+Launch the review UI (preferred):
+
 ```bash
-cat auto_anki_runs/proposed_cards_$(date +%Y-%m-%d).md | less
+./launch_ui.sh
 ```
 
-Or open in your text editor to review and select cards to import.
+Select the newest run (uses `auto_anki_runs/run-*/all_proposed_cards.json`), review cards, and mark accept/reject/edit.
 
 ### 3. Import Selected Cards to Anki
 
-Manually copy/paste cards you want to keep from the Markdown file into your Anki HTML collections or import dialog.
+Export accepted cards from the UI (`accepted_cards_*.json`) and import into Anki.
 
 ## Common Commands
 
@@ -108,8 +110,8 @@ python3 auto_anki_agent.py --date-range 2025-10 --verbose
 
 ## Output Locations
 
-- **Markdown cards**: `auto_anki_runs/proposed_cards_YYYY-MM-DD.md`
-- **JSON cards**: `auto_anki_runs/run-TIMESTAMP/all_proposed_cards.json`
+- **Proposed cards (JSON)**: `auto_anki_runs/run-TIMESTAMP/all_proposed_cards.json`
+- **Accepted cards (from UI)**: `auto_anki_runs/run-TIMESTAMP/accepted_cards_YYYYMMDD-HHMMSS.json`
 - **Run artifacts**: `auto_anki_runs/run-TIMESTAMP/`
 - **State file**: `.auto_anki_agent_state.json`
 
@@ -206,9 +208,9 @@ collections/
 ├── QUICK_START.md              # This file
 ├── .auto_anki_agent_state.json # Processing state (v2 with seen_conversations)
 └── auto_anki_runs/             # Generated outputs
-    ├── proposed_cards_2025-11-08.md
     └── run-20251108-125440/
         ├── all_proposed_cards.json
+        ├── accepted_cards_20251108-130000.json
         ├── selected_conversations.json  # Full conversation context
         └── ...
 ```

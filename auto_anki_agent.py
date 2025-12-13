@@ -45,11 +45,8 @@ from auto_anki.codex import (
     build_conversation_prompt,
     build_conversation_filter_prompt,
     chunked,
-    format_cards_as_markdown,
-    format_conversation_cards_as_markdown,
     parse_codex_response_robust,
     run_codex_exec,
-    run_codex_pipeline,
 )
 from auto_anki.dedup import enrich_cards_with_duplicate_flags, prune_contexts, prune_conversations
 from auto_anki.llm_backends import list_backends
@@ -131,9 +128,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-format",
-        choices=["json", "markdown", "both"],
-        default="both",
-        help="Output format for proposed cards (default: %(default)s).",
+        default="json",
+        help="Deprecated: Markdown output has been removed; JSON is always written.",
     )
     parser.add_argument(
         "--output-dir",
@@ -368,6 +364,9 @@ def parse_args() -> argparse.Namespace:
         parser.error("--min-score must be non-negative.")
     if args.max_chat_files <= 0:
         parser.error("--max-chat-files must be positive.")
+    if (args.output_format or "").lower() != "json":
+        print("⚠️  Markdown output has been removed; writing JSON only.")
+        args.output_format = "json"
     return args
 
 
@@ -877,24 +876,12 @@ def main() -> None:
             print(f"{'='*60}")
 
         # Generate output files (conversation mode)
-        if args.output_format in ["markdown", "both"]:
-            markdown_content = format_conversation_cards_as_markdown(
-                all_proposed_cards, conversations, run_timestamp
-            )
-            markdown_path = output_dir / f"proposed_cards_{datetime.now().strftime('%Y-%m-%d')}.md"
-            markdown_path.write_text(markdown_content)
-            if args.verbose:
-                print(f"✓ Markdown cards saved to: {markdown_path}")
-            else:
-                print(f"Markdown cards saved to: {markdown_path}")
-
-        if args.output_format in ["json", "both"]:
-            json_path = run_dir / "all_proposed_cards.json"
-            json_path.write_text(json.dumps(all_proposed_cards, indent=2))
-            if args.verbose:
-                print(f"✓ JSON cards saved to: {json_path}")
-            else:
-                print(f"JSON cards saved to: {json_path}")
+        json_path = run_dir / "all_proposed_cards.json"
+        json_path.write_text(json.dumps(all_proposed_cards, indent=2))
+        if args.verbose:
+            print(f"✓ JSON cards saved to: {json_path}")
+        else:
+            print(f"JSON cards saved to: {json_path}")
 
         # Update state (conversation-level tracking)
         if args.verbose:

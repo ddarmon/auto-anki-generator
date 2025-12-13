@@ -507,84 +507,6 @@ def chunked(seq: Sequence[Any], size: int) -> Iterable[List[Any]]:
         yield list(seq[start : start + size])
 
 
-def format_cards_as_markdown(
-    cards_json: List[Dict[str, Any]],
-    contexts: List[ChatTurn],
-    run_timestamp: str,
-) -> str:
-    """
-    Format proposed cards as markdown following Anki best practices.
-    """
-    context_map = {ctx.context_id: ctx for ctx in contexts}
-
-    lines = [
-        "# Proposed Anki Cards",
-        "",
-        f"Generated: {run_timestamp}",
-        f"Total cards: {len(cards_json)}",
-        "",
-        "---",
-        "",
-    ]
-
-    for card_data in cards_json:
-        context_id = card_data.get("context_id", "unknown")
-        context = context_map.get(context_id)
-
-        # Card header
-        lines.append(f"## Card: {card_data.get('front', 'No front')[:60]}...")
-        lines.append("")
-
-        # Metadata
-        lines.append(f"**Deck:** {card_data.get('deck', 'unknown')}")
-        lines.append(f"**Style:** {card_data.get('card_style', 'basic')}")
-
-        # Handle confidence as either string or float
-        confidence = card_data.get("confidence", 0.0)
-        try:
-            confidence_float = float(confidence) if confidence else 0.0
-            lines.append(f"**Confidence:** {confidence_float:.2f}")
-        except (ValueError, TypeError):
-            lines.append(f"**Confidence:** {confidence}")
-
-        if card_data.get("tags"):
-            lines.append(f"**Tags:** {', '.join(card_data['tags'])}")
-
-        # Source info
-        if context:
-            lines.append("")
-            lines.append(f"**Source:** {Path(context.source_path).name}")
-            if context.source_title:
-                lines.append(f"**Title:** {context.source_title}")
-            if context.user_timestamp:
-                lines.append(f"**Date:** {context.user_timestamp}")
-
-        lines.append("")
-
-        # Card content
-        lines.append("### Front")
-        lines.append("")
-        lines.append(card_data.get("front", ""))
-        lines.append("")
-
-        lines.append("### Back")
-        lines.append("")
-        lines.append(card_data.get("back", ""))
-        lines.append("")
-
-        # Notes
-        if card_data.get("notes"):
-            lines.append("### Notes")
-            lines.append("")
-            lines.append(card_data["notes"])
-            lines.append("")
-
-        lines.append("---")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
 def run_codex_pipeline(
     cards_for_prompt: List[Card],
     contexts: List[ChatTurn],
@@ -818,26 +740,12 @@ def run_codex_pipeline(
         print("Generating output files...")
         print(f"{'='*60}")
 
-    if args.output_format in ["markdown", "both"]:
-        markdown_content = format_cards_as_markdown(
-            all_proposed_cards, contexts, run_timestamp
-        )
-        markdown_path = (
-            output_dir / f"proposed_cards_{datetime.now().strftime('%Y-%m-%d')}.md"
-        )
-        markdown_path.write_text(markdown_content)
-        if args.verbose:
-            print(f"✓ Markdown cards saved to: {markdown_path}")
-        else:
-            print(f"Markdown cards saved to: {markdown_path}")
-
-    if args.output_format in ["json", "both"]:
-        json_path = run_dir / "all_proposed_cards.json"
-        json_path.write_text(json.dumps(all_proposed_cards, indent=2))
-        if args.verbose:
-            print(f"✓ JSON cards saved to: {json_path}")
-        else:
-            print(f"JSON cards saved to: {json_path}")
+    json_path = run_dir / "all_proposed_cards.json"
+    json_path.write_text(json.dumps(all_proposed_cards, indent=2))
+    if args.verbose:
+        print(f"✓ JSON cards saved to: {json_path}")
+    else:
+        print(f"JSON cards saved to: {json_path}")
 
     # Update state
     if args.verbose:
@@ -1245,121 +1153,11 @@ def build_conversation_filter_prompt(
     return instructions + "\n\n" + json.dumps(payload, indent=2, ensure_ascii=False)
 
 
-def format_conversation_cards_as_markdown(
-    cards_json: List[Dict[str, Any]],
-    conversations: List[Conversation],
-    run_timestamp: str,
-) -> str:
-    """Format proposed cards as markdown, showing conversation context."""
-    # Build lookup maps
-    conv_map = {conv.conversation_id: conv for conv in conversations}
-    turn_map: Dict[str, ChatTurn] = {}
-    for conv in conversations:
-        for turn in conv.turns:
-            turn_map[turn.context_id] = turn
-
-    lines = [
-        "# Proposed Anki Cards (Conversation Mode)",
-        "",
-        f"Generated: {run_timestamp}",
-        f"Total cards: {len(cards_json)}",
-        f"From {len(conversations)} conversations",
-        "",
-        "---",
-        "",
-    ]
-
-    # Group cards by conversation
-    cards_by_conv: Dict[str, List[Dict[str, Any]]] = {}
-    for card_data in cards_json:
-        conv_id = card_data.get("conversation_id", "unknown")
-        if conv_id not in cards_by_conv:
-            cards_by_conv[conv_id] = []
-        cards_by_conv[conv_id].append(card_data)
-
-    for conv_id, conv_cards in cards_by_conv.items():
-        conv = conv_map.get(conv_id)
-
-        # Conversation header
-        title = conv.source_title if conv else "Unknown Conversation"
-        lines.append(f"## Conversation: {title}")
-        lines.append("")
-
-        if conv:
-            lines.append(f"**Topics:** {', '.join(conv.key_topics[:5])}")
-            lines.append(f"**Turns:** {len(conv.turns)}")
-            if conv.source_url:
-                lines.append(f"**Source:** {conv.source_url}")
-        lines.append("")
-
-        # Cards from this conversation
-        for card_data in conv_cards:
-            turn_idx = card_data.get("turn_index", "?")
-            context_id = card_data.get("context_id", "")
-            turn = turn_map.get(context_id)
-
-            lines.append(f"### Card (Turn {turn_idx})")
-            lines.append("")
-
-            # Metadata
-            lines.append(f"**Deck:** {card_data.get('deck', 'unknown')}")
-            lines.append(f"**Style:** {card_data.get('card_style', 'basic')}")
-
-            confidence = card_data.get("confidence", 0.0)
-            try:
-                confidence_float = float(confidence) if confidence else 0.0
-                lines.append(f"**Confidence:** {confidence_float:.2f}")
-            except (ValueError, TypeError):
-                lines.append(f"**Confidence:** {confidence}")
-
-            if card_data.get("tags"):
-                lines.append(f"**Tags:** {', '.join(card_data['tags'])}")
-
-            if card_data.get("depends_on"):
-                lines.append(f"**Depends on:** {len(card_data['depends_on'])} prior card(s)")
-
-            lines.append("")
-
-            # Card content
-            lines.append("#### Front")
-            lines.append("")
-            lines.append(card_data.get("front", ""))
-            lines.append("")
-
-            lines.append("#### Back")
-            lines.append("")
-            lines.append(card_data.get("back", ""))
-            lines.append("")
-
-            # Source turn context (collapsed)
-            if turn:
-                lines.append("<details>")
-                lines.append("<summary>Source Exchange</summary>")
-                lines.append("")
-                lines.append(f"**User:** {turn.user_prompt[:300]}...")
-                lines.append("")
-                lines.append(f"**Assistant:** {turn.assistant_answer[:500]}...")
-                lines.append("</details>")
-                lines.append("")
-
-            # Notes
-            if card_data.get("notes"):
-                lines.append(f"**Notes:** {card_data['notes']}")
-                lines.append("")
-
-            lines.append("---")
-            lines.append("")
-
-    return "\n".join(lines)
-
-
 __all__ = [
     "build_codex_prompt",
     "build_conversation_prompt",
     "build_conversation_filter_prompt",
     "run_codex_exec",
     "parse_codex_response_robust",
-    "format_cards_as_markdown",
-    "format_conversation_cards_as_markdown",
     "run_codex_pipeline",
 ]
