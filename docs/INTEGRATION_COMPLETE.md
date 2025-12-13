@@ -86,7 +86,7 @@ The script will:
 ### Option A: Review → Import Individual Cards
 
 1. Launch UI: `./launch_ui.sh`
-2. Select a run from dropdown
+2. Select a run from dropdown (use the run-order toggles as needed; empty runs are hidden by default)
 3. Review cards using keyboard shortcuts:
    - `A` - Accept
    - `R` - Reject

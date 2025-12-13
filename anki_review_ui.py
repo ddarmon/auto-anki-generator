@@ -285,12 +285,19 @@ def _check_run_complete(run_dir: Path) -> bool:
     session_file = run_dir / ".review_session.json"
     cards_file = run_dir / "all_proposed_cards.json"
 
-    if not session_file.exists() or not cards_file.exists():
+    if not cards_file.exists():
         return False
 
     try:
-        session_data = json.loads(session_file.read_text())
         cards_data = json.loads(cards_file.read_text())
+        if isinstance(cards_data, list) and len(cards_data) == 0:
+            # Nothing to review; consider run complete for archiving/UI labeling.
+            return True
+
+        if not session_file.exists():
+            return False
+
+        session_data = json.loads(session_file.read_text())
 
         total_cards = len(cards_data)
         decisions = session_data.get("decisions", {})
@@ -298,6 +305,26 @@ def _check_run_complete(run_dir: Path) -> bool:
         return len(decisions) >= total_cards and total_cards > 0
     except (json.JSONDecodeError, KeyError):
         return False
+
+
+def _get_run_card_count(run_dir: Path) -> Optional[int]:
+    """Return number of proposed cards in a run, or None if unavailable."""
+    cards_file = run_dir / "all_proposed_cards.json"
+    if not cards_file.exists():
+        return None
+    try:
+        cards_data = json.loads(cards_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(cards_data, list):
+        return None
+    return len(cards_data)
+
+
+def _is_run_empty(run_dir: Path) -> bool:
+    """Return True if a run has an explicit empty all_proposed_cards.json (i.e., [])."""
+    count = _get_run_card_count(run_dir)
+    return count == 0
 
 
 def _parse_run_timestamp(run_dir: Path) -> Optional[datetime]:
@@ -466,9 +493,11 @@ def _format_run_card_date_label(run_dir: Path) -> str:
     """Format a concise run label suffix describing card date distribution."""
     card_ts, total_cards = _get_run_card_timestamps(run_dir)
     if not card_ts:
-        if total_cards <= 0:
-            return ""
-        return f" [cards: no timestamps]"
+        if total_cards == 0:
+            return " [EMPTY]"
+        if total_cards is not None and total_cards > 0:
+            return f" [cards: no timestamps]"
+        return ""
 
     median_dt = _median_datetime(card_ts)
     min_dt = min(card_ts)
@@ -493,6 +522,7 @@ def list_runs_by_date(
     limit: Optional[int] = None,
     reverse: bool = True,
     order_by_card_median: bool = False,
+    include_empty: bool = True,
 ) -> List[tuple]:
     """List non-archived run directories with completion status.
 
@@ -508,6 +538,9 @@ def list_runs_by_date(
         for d in base_dir.iterdir()
         if d.is_dir() and d.name.startswith("run-") and d.name != "archived"
     ]
+
+    if not include_empty:
+        run_dirs = [d for d in run_dirs if not _is_run_empty(d)]
 
     if order_by_card_median:
         run_dirs.sort(key=_run_card_median_sort_key, reverse=reverse)
@@ -545,7 +578,13 @@ def archive_run(run_dir: Path, archive_base: Path = None) -> Path:
     return dest
 
 
-def find_archived_runs(base_dir: Path = Path("auto_anki_runs"), limit: int = 20) -> List[tuple]:
+def find_archived_runs(
+    base_dir: Path = Path("auto_anki_runs"),
+    limit: int = 20,
+    reverse: bool = True,
+    order_by_card_median: bool = False,
+    include_empty: bool = True,
+) -> List[tuple]:
     """Find archived run directories with completion status.
 
     Returns list of (run_path, is_complete) tuples from the archived folder.
@@ -554,16 +593,13 @@ def find_archived_runs(base_dir: Path = Path("auto_anki_runs"), limit: int = 20)
     if not archived_dir.exists():
         return []
 
-    run_dirs = [d for d in archived_dir.iterdir()
-                if d.is_dir() and d.name.startswith('run-')]
-    run_dirs.sort(reverse=True)
-
-    results = []
-    for run_dir in run_dirs[:limit]:
-        is_complete = _check_run_complete(run_dir)
-        results.append((run_dir, is_complete))
-
-    return results
+    return list_runs_by_date(
+        base_dir=archived_dir,
+        limit=limit,
+        reverse=reverse,
+        order_by_card_median=order_by_card_median,
+        include_empty=include_empty,
+    )
 
 
 # ============================================================================
@@ -680,6 +716,18 @@ app_ui = ui.page_fluid(
                 "Order runs by median card date",
                 value=False,
             ),
+            ui.input_checkbox(
+                "show_empty_runs",
+                "Show empty runs (0 cards)",
+                value=False,
+            ),
+            ui.input_action_button(
+                "btn_archive_empty_runs",
+                "Archive Empty Runs",
+                class_="btn-outline-secondary",
+                width="100%",
+            ),
+            ui.output_text("empty_runs_message", inline=True),
         ),
         ui.column(4,
             ui.output_ui("run_info")
@@ -1071,6 +1119,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     codex_msg = reactive.Value("")
     stats_trigger = reactive.Value(0)  # Trigger to force stats UI update
     pending_edit = reactive.Value(None)  # Stores {front, back, tags} from Codex or None
+    empty_runs_msg = reactive.Value("")
 
     def clear_card_state():
         """Reset card-specific UI state when changing cards."""
@@ -1091,12 +1140,14 @@ def server(input: Inputs, output: Outputs, session: Session):
         runs = list_runs_by_date(
             reverse=input.run_order_desc(),
             order_by_card_median=input.run_order_by_card_median(),
+            include_empty=input.show_empty_runs(),
         )
         choices = {}
         for run_path, is_complete in runs:
+            is_empty = _is_run_empty(run_path)
             label = run_path.name
             label += _format_run_card_date_label(run_path)
-            if is_complete:
+            if is_complete and not is_empty:
                 label += " [DONE]"
             choices[str(run_path)] = label
         if not choices:
@@ -1104,12 +1155,17 @@ def server(input: Inputs, output: Outputs, session: Session):
         ui.update_select("run_select", choices=choices)
 
         # Populate archived runs dropdown
-        archived = find_archived_runs()
+        archived = find_archived_runs(
+            reverse=input.run_order_desc(),
+            order_by_card_median=input.run_order_by_card_median(),
+            include_empty=input.show_empty_runs(),
+        )
         archived_choices = {"": "-- Select archived run --"}
         for run_path, is_complete in archived:
+            is_empty = _is_run_empty(run_path)
             label = run_path.name
             label += _format_run_card_date_label(run_path)
-            if is_complete:
+            if is_complete and not is_empty:
                 label += " [DONE]"
             archived_choices[str(run_path)] = label
         ui.update_select("archived_run_select", choices=archived_choices)
@@ -1148,6 +1204,11 @@ def server(input: Inputs, output: Outputs, session: Session):
                 datetime.fromtimestamp(run_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
             )
         return ""
+
+    @output
+    @render.text
+    def empty_runs_message():
+        return empty_runs_msg.get()
 
     # Get current card (returns edited version if available)
     def get_current_card():
@@ -1853,12 +1914,14 @@ def server(input: Inputs, output: Outputs, session: Session):
         runs = list_runs_by_date(
             reverse=input.run_order_desc(),
             order_by_card_median=input.run_order_by_card_median(),
+            include_empty=input.show_empty_runs(),
         )
         choices = {}
         for run_path, is_complete in runs:
+            is_empty = _is_run_empty(run_path)
             label = run_path.name
             label += _format_run_card_date_label(run_path)
-            if is_complete:
+            if is_complete and not is_empty:
                 label += " [DONE]"
             choices[str(run_path)] = label
         if not choices:
@@ -1866,15 +1929,66 @@ def server(input: Inputs, output: Outputs, session: Session):
         ui.update_select("run_select", choices=choices)
 
         # Refresh archived runs
-        archived = find_archived_runs()
+        archived = find_archived_runs(
+            reverse=input.run_order_desc(),
+            order_by_card_median=input.run_order_by_card_median(),
+            include_empty=input.show_empty_runs(),
+        )
         archived_choices = {"": "-- Select archived run --"}
         for run_path, is_complete in archived:
+            is_empty = _is_run_empty(run_path)
             label = run_path.name
             label += _format_run_card_date_label(run_path)
-            if is_complete:
+            if is_complete and not is_empty:
                 label += " [DONE]"
             archived_choices[str(run_path)] = label
         ui.update_select("archived_run_select", choices=archived_choices)
+
+    @reactive.Effect
+    @reactive.event(input.btn_archive_empty_runs)
+    def _():
+        """Archive all active runs that produced zero proposed cards."""
+        base_dir = Path("auto_anki_runs")
+        if not base_dir.exists():
+            empty_runs_msg.set("⚠ auto_anki_runs/ not found")
+            return
+
+        run_dirs = [
+            d
+            for d in base_dir.iterdir()
+            if d.is_dir() and d.name.startswith("run-") and d.name != "archived"
+        ]
+
+        archived_count = 0
+        failed_count = 0
+        archived_current = False
+        current_session = session_state.get()
+        current_run = current_session.run_dir if current_session else None
+
+        for run_dir in run_dirs:
+            if not _is_run_empty(run_dir):
+                continue
+            try:
+                archive_run(run_dir)
+                archived_count += 1
+                if current_run and run_dir == current_run:
+                    archived_current = True
+            except Exception:
+                failed_count += 1
+
+        if archived_current:
+            session_state.set(None)
+            current_card_index.set(0)
+            ui.update_select("run_select", selected="")
+
+        refresh_run_lists()
+
+        if archived_count == 0 and failed_count == 0:
+            empty_runs_msg.set("✓ No empty runs to archive")
+        elif failed_count == 0:
+            empty_runs_msg.set(f"✓ Archived {archived_count} empty runs")
+        else:
+            empty_runs_msg.set(f"⚠ Archived {archived_count} empty runs; {failed_count} failed")
 
     @reactive.Effect
     @reactive.event(input.btn_archive_run)

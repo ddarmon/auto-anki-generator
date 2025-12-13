@@ -77,7 +77,10 @@ The app will automatically open in your browser at `http://localhost:8000`.
 
 ### Review Workflow
 
-1. **Select a run** - Choose from Auto Anki Agent runs (use the "Show newest runs first" checkbox to toggle between reverse-chronological and chronological order)
+1. **Select a run** - Choose from Auto Anki Agent runs:
+   - **Show newest runs first** - reverse chronological by run folder timestamp
+   - **Order runs by median card date** - chronological by the *content date* of cards in the run (median `user_timestamp`)
+   - **Show empty runs (0 cards)** - include runs where `all_proposed_cards.json` is `[]` (these are labeled `[EMPTY]`)
 2. **Review cards** - Navigate through proposed cards
 3. **Make decisions**:
    - **Accept** ✓ - Mark card as good, move to next
@@ -108,6 +111,13 @@ You can ask Codex (via codex-cli) to rewrite or fix the *current* card, using bo
 Notes:
 - Codex suggestions never overwrite your data automatically; they only pre-fill the editor.
 - If `codex` is not on your `PATH`, the UI will show an error in the Codex status line.
+
+### Empty Runs
+
+Some runs intentionally contain **0 cards** (for example, when Stage 1 filters out all conversations). By default, these runs are hidden from the run dropdown to reduce clutter.
+
+- Enable **Show empty runs (0 cards)** to display them (they will be labeled `[EMPTY]`).
+- Use **Archive Empty Runs** to bulk-move all empty active runs into `auto_anki_runs/archived/`.
 
 ### Keyboard Shortcuts ✅ NEW!
 
