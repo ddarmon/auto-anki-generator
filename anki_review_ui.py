@@ -147,12 +147,56 @@ class CardReviewSession:
 
     def record_decision(self, index: int, action: str, reason: str = "", edited_card: Dict = None):
         """Record a decision for a card."""
-        self.decisions[index] = {
+        decision = {
             'action': action,
             'reason': reason,
             'edited_card': edited_card,
             'timestamp': datetime.now().isoformat()
         }
+        # Accepted/edited cards are typically destined for Anki import; track pending status.
+        if action in ("accept", "edit"):
+            decision.setdefault("anki_import", {"status": "pending"})
+        self.decisions[index] = decision
+
+    def mark_anki_import_status(
+        self,
+        index: int,
+        status: str,
+        note_id: Optional[int] = None,
+    ):
+        """Mark a card's Anki import status on the decision record.
+
+        Status values (convention):
+          - pending: accepted/edited but not imported yet
+          - imported: imported successfully
+          - duplicate: already existed in Anki
+          - imported_or_duplicate: batch import where individual mapping isn't available
+        """
+        decision = self.decisions.get(index)
+        if not decision:
+            # If it was imported without a prior decision, treat it as accepted.
+            self.record_decision(index, "accept", reason="Imported to Anki")
+            decision = self.decisions.get(index)
+            if not decision:
+                return
+
+        decision["anki_import"] = {
+            "status": status,
+            "note_id": note_id,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    def get_pending_anki_import_indices(self) -> List[int]:
+        """Return indices of accepted/edited cards that still need Anki import."""
+        pending: List[int] = []
+        for idx, decision in self.decisions.items():
+            if decision.get("action") not in ("accept", "edit"):
+                continue
+            import_info = decision.get("anki_import") or {"status": "pending"}
+            if import_info.get("status") in ("imported", "duplicate", "imported_or_duplicate"):
+                continue
+            pending.append(idx)
+        return sorted(pending)
 
     def get_stats(self) -> Dict:
         """Get session statistics."""
@@ -1196,12 +1240,23 @@ def server(input: Inputs, output: Outputs, session: Session):
     def run_info():
         if input.run_select():
             run_path = Path(input.run_select())
+            pending_line = ""
+            session = session_state.get()
+            if session and session.run_dir == run_path:
+                pending_count = len(session.get_pending_anki_import_indices())
+                if pending_count > 0:
+                    pending_line = ui.div(
+                        {"style": "color: #b02a37; margin-top: 6px;"},
+                        ui.strong("Pending Anki import: "),
+                        str(pending_count),
+                    )
             return ui.div(
                 ui.strong("Run: "),
                 run_path.name,
                 ui.br(),
                 ui.strong("Date: "),
-                datetime.fromtimestamp(run_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                datetime.fromtimestamp(run_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
+                pending_line,
             )
         return ""
 
@@ -2005,6 +2060,14 @@ def server(input: Inputs, output: Outputs, session: Session):
             archive_msg.set(f"⚠ Run not complete ({stats['remaining']} cards remaining)")
             return
 
+        pending_import = session.get_pending_anki_import_indices()
+        if pending_import:
+            archive_msg.set(
+                f"⚠ Cannot archive: {len(pending_import)} accepted card(s) pending Anki import. "
+                "Use 'Import All Accepted to Anki' (or import individually) first."
+            )
+            return
+
         try:
             run_dir = session.run_dir
             archived_path = archive_run(run_dir)
@@ -2137,17 +2200,21 @@ def server(input: Inputs, output: Outputs, session: Session):
                 allow_duplicate=input.allow_duplicates()
             )
 
+            idx = current_card_index.get()
+            session = session_state.get()
+
             if note_id:
                 anki_msg.set(f"✓ Imported to {card.get('deck', 'Default')} (ID: {note_id})")
-                # Mark as accepted if not already decided
-                idx = current_card_index.get()
-                session = session_state.get()
-                if session and idx not in session.decisions:
-                    session.record_decision(idx, 'accept', reason="Imported to Anki")
+                if session:
+                    session.mark_anki_import_status(idx, status="imported", note_id=note_id)
                     session.save_session()
                     stats_trigger.set(stats_trigger.get() + 1)  # Trigger stats update
             else:
                 anki_msg.set("⚠ Card already exists in Anki (duplicate)")
+                if session:
+                    session.mark_anki_import_status(idx, status="duplicate", note_id=None)
+                    session.save_session()
+                    stats_trigger.set(stats_trigger.get() + 1)  # Trigger stats update
 
         except ConnectionError as e:
             anki_msg.set(f"✗ Connection error: {str(e)[:50]}")
@@ -2171,6 +2238,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         # Collect accepted cards
         accepted_cards = []
+        accepted_indices = []
         for idx, card in enumerate(session.cards):
             decision = session.decisions.get(idx)
             if decision and decision['action'] in ['accept', 'edit']:
@@ -2178,6 +2246,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                 edited = decision.get('edited_card')
                 card_to_import = edited if edited else card
                 accepted_cards.append(card_to_import)
+                accepted_indices.append(idx)
 
         if not accepted_cards:
             anki_msg.set("⚠ No accepted cards to import")
@@ -2204,6 +2273,11 @@ def server(input: Inputs, output: Outputs, session: Session):
                 msg += f", {result['failed']} failed"
 
             anki_msg.set(msg)
+            if result.get("failed", 0) == 0 and accepted_indices:
+                for idx in accepted_indices:
+                    session.mark_anki_import_status(idx, status="imported_or_duplicate", note_id=None)
+                session.save_session()
+                stats_trigger.set(stats_trigger.get() + 1)  # Trigger stats update
 
         except ConnectionError as e:
             anki_msg.set(f"✗ Connection error: {str(e)[:50]}")
