@@ -19,7 +19,7 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import argparse
 import textwrap
@@ -324,10 +324,175 @@ def _run_sort_key(run_dir: Path) -> float:
     return run_dir.stat().st_mtime
 
 
+def _parse_user_timestamp(value: object) -> Optional[datetime]:
+    """Parse a user timestamp from run metadata.
+
+    Timestamps typically look like ``YYYY-MM-DD HH:MM:SS`` but may also be ISO-8601.
+    Returns None if parsing fails.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    ts_str = str(value).strip()
+    if not ts_str:
+        return None
+
+    # Handle common "Z" suffix for UTC timestamps.
+    if ts_str.endswith("Z"):
+        try:
+            return datetime.fromisoformat(ts_str[:-1] + "+00:00")
+        except ValueError:
+            pass
+
+    try:
+        return datetime.fromisoformat(ts_str)
+    except ValueError:
+        pass
+
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(ts_str, fmt)
+        except ValueError:
+            continue
+
+    return None
+
+
+def _median_datetime(values: List[datetime]) -> Optional[datetime]:
+    """Return the median datetime (by POSIX timestamp) for a non-empty list."""
+    if not values:
+        return None
+    timestamps = sorted(dt.timestamp() for dt in values)
+    n = len(timestamps)
+    mid = n // 2
+    if n % 2 == 1:
+        median_ts = timestamps[mid]
+    else:
+        median_ts = (timestamps[mid - 1] + timestamps[mid]) / 2
+    return datetime.fromtimestamp(median_ts)
+
+
+def _load_run_timestamp_lookups(run_dir: Path) -> Tuple[Dict[str, datetime], Dict[Tuple[str, int], datetime]]:
+    """Load timestamp lookups for a run.
+
+    Returns:
+        - context_id -> datetime (from selected_contexts.json or selected_conversations.json turns)
+        - (conversation_id, turn_index) -> datetime (from selected_conversations.json turns)
+    """
+    context_ts: Dict[str, datetime] = {}
+    conv_turn_ts: Dict[Tuple[str, int], datetime] = {}
+
+    contexts_file = run_dir / "selected_contexts.json"
+    if contexts_file.exists():
+        try:
+            contexts_list = json.loads(contexts_file.read_text())
+            for ctx in contexts_list:
+                context_id = ctx.get("context_id")
+                dt = _parse_user_timestamp(ctx.get("user_timestamp"))
+                if context_id and dt is not None:
+                    context_ts[context_id] = dt
+        except (json.JSONDecodeError, OSError, AttributeError):
+            pass
+
+    conversations_file = run_dir / "selected_conversations.json"
+    if conversations_file.exists():
+        try:
+            conversations_list = json.loads(conversations_file.read_text())
+            for conv in conversations_list:
+                conv_id = conv.get("conversation_id")
+                turns = conv.get("turns", [])
+                if not conv_id or not isinstance(turns, list):
+                    continue
+                for idx, turn in enumerate(turns):
+                    dt = _parse_user_timestamp(turn.get("user_timestamp"))
+                    if dt is None:
+                        continue
+                    conv_turn_ts[(conv_id, idx)] = dt
+                    context_id = turn.get("context_id")
+                    if context_id and context_id not in context_ts:
+                        context_ts[context_id] = dt
+        except (json.JSONDecodeError, OSError, AttributeError):
+            pass
+
+    return context_ts, conv_turn_ts
+
+
+def _get_run_card_timestamps(run_dir: Path) -> Tuple[List[datetime], int]:
+    """Return (card timestamps, total cards) for a run."""
+    cards_file = run_dir / "all_proposed_cards.json"
+    if not cards_file.exists():
+        return [], 0
+
+    try:
+        cards = json.loads(cards_file.read_text())
+        if not isinstance(cards, list):
+            return [], 0
+    except (json.JSONDecodeError, OSError):
+        return [], 0
+
+    context_ts, conv_turn_ts = _load_run_timestamp_lookups(run_dir)
+
+    timestamps: List[datetime] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+
+        context_id = card.get("context_id")
+        if context_id and context_id in context_ts:
+            timestamps.append(context_ts[context_id])
+            continue
+
+        conv_id = card.get("conversation_id")
+        turn_idx = card.get("turn_index")
+        if conv_id and isinstance(turn_idx, int):
+            dt = conv_turn_ts.get((conv_id, turn_idx))
+            if dt is not None:
+                timestamps.append(dt)
+
+    return timestamps, len(cards)
+
+
+def _run_card_median_sort_key(run_dir: Path) -> float:
+    """Return a sortable key for a run based on median card timestamp."""
+    card_ts, _total = _get_run_card_timestamps(run_dir)
+    median_dt = _median_datetime(card_ts)
+    if median_dt is not None:
+        return median_dt.timestamp()
+    return _run_sort_key(run_dir)
+
+
+def _format_run_card_date_label(run_dir: Path) -> str:
+    """Format a concise run label suffix describing card date distribution."""
+    card_ts, total_cards = _get_run_card_timestamps(run_dir)
+    if not card_ts:
+        if total_cards <= 0:
+            return ""
+        return f" [cards: no timestamps]"
+
+    median_dt = _median_datetime(card_ts)
+    min_dt = min(card_ts)
+    max_dt = max(card_ts)
+
+    start = min_dt.strftime("%Y-%m-%d")
+    end = max_dt.strftime("%Y-%m-%d")
+    median = median_dt.strftime("%Y-%m-%d") if median_dt is not None else start
+
+    if start == end:
+        date_part = start
+    else:
+        date_part = f"{start}..{end} (median {median})"
+
+    if len(card_ts) != total_cards and total_cards > 0:
+        return f" [cards {date_part}; ts {len(card_ts)}/{total_cards}]"
+    return f" [cards {date_part}]"
+
+
 def list_runs_by_date(
     base_dir: Path = Path("auto_anki_runs"),
     limit: Optional[int] = None,
     reverse: bool = True,
+    order_by_card_median: bool = False,
 ) -> List[tuple]:
     """List non-archived run directories with completion status.
 
@@ -344,7 +509,10 @@ def list_runs_by_date(
         if d.is_dir() and d.name.startswith("run-") and d.name != "archived"
     ]
 
-    run_dirs.sort(key=_run_sort_key, reverse=reverse)
+    if order_by_card_median:
+        run_dirs.sort(key=_run_card_median_sort_key, reverse=reverse)
+    else:
+        run_dirs.sort(key=_run_sort_key, reverse=reverse)
 
     if limit is not None:
         run_dirs = run_dirs[:limit]
@@ -506,6 +674,11 @@ app_ui = ui.page_fluid(
                 "run_order_desc",
                 "Show newest runs first",
                 value=True,
+            ),
+            ui.input_checkbox(
+                "run_order_by_card_median",
+                "Order runs by median card date",
+                value=False,
             ),
         ),
         ui.column(4,
@@ -915,10 +1088,14 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.Effect
     def _():
         # Populate active runs dropdown
-        runs = list_runs_by_date(reverse=input.run_order_desc())
+        runs = list_runs_by_date(
+            reverse=input.run_order_desc(),
+            order_by_card_median=input.run_order_by_card_median(),
+        )
         choices = {}
         for run_path, is_complete in runs:
             label = run_path.name
+            label += _format_run_card_date_label(run_path)
             if is_complete:
                 label += " [DONE]"
             choices[str(run_path)] = label
@@ -931,6 +1108,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         archived_choices = {"": "-- Select archived run --"}
         for run_path, is_complete in archived:
             label = run_path.name
+            label += _format_run_card_date_label(run_path)
             if is_complete:
                 label += " [DONE]"
             archived_choices[str(run_path)] = label
@@ -1672,10 +1850,14 @@ def server(input: Inputs, output: Outputs, session: Session):
     def refresh_run_lists():
         """Refresh both active and archived run dropdowns."""
         # Refresh active runs
-        runs = list_runs_by_date(reverse=input.run_order_desc())
+        runs = list_runs_by_date(
+            reverse=input.run_order_desc(),
+            order_by_card_median=input.run_order_by_card_median(),
+        )
         choices = {}
         for run_path, is_complete in runs:
             label = run_path.name
+            label += _format_run_card_date_label(run_path)
             if is_complete:
                 label += " [DONE]"
             choices[str(run_path)] = label
@@ -1688,6 +1870,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         archived_choices = {"": "-- Select archived run --"}
         for run_path, is_complete in archived:
             label = run_path.name
+            label += _format_run_card_date_label(run_path)
             if is_complete:
                 label += " [DONE]"
             archived_choices[str(run_path)] = label
