@@ -162,7 +162,7 @@ class TestExtractTurns:
         assert turns == []
 
     def test_multiple_users_before_assistant(self):
-        """Multiple user entries before assistant should pair last user."""
+        """Multiple user entries before assistant should be merged into one prompt."""
         entries = [
             {"role": "user", "text": "Q1", "timestamp": "2025-01-01"},
             {"role": "user", "text": "Q2", "timestamp": "2025-01-01"},
@@ -170,9 +170,48 @@ class TestExtractTurns:
         ]
 
         turns = extract_turns(entries)
-        # First user should pair with first assistant found
+        assert len(turns) == 1
+        assert turns[0][0]["text"] == "Q1\n\nQ2"
+        assert turns[0][1]["text"] == "A2"
+
+    def test_prefers_substantive_assistant_content(self):
+        """Should ignore assistant 'thoughts/code/reasoning_recap' JSON and keep the final answer."""
+        entries = [
+            {"role": "user", "text": "Q1", "timestamp": "2025-01-01"},
+            {
+                "role": "assistant",
+                "text": '{"content_type":"thoughts","thoughts":[{"summary":"x"}]}',
+                "timestamp": "2025-01-01",
+            },
+            {
+                "role": "assistant",
+                "text": '{"content_type":"code","text":"{\\"search_query\\":[{\\"q\\":\\"x\\"}] }"}',
+                "timestamp": "2025-01-01",
+            },
+            {"role": "assistant", "text": "Final answer", "timestamp": "2025-01-01"},
+            {
+                "role": "assistant",
+                "text": '{"content_type":"reasoning_recap","content":"Thought for 1s"}',
+                "timestamp": "2025-01-01",
+            },
+        ]
+
+        turns = extract_turns(entries)
         assert len(turns) == 1
         assert turns[0][0]["text"] == "Q1"
+        assert turns[0][1]["text"] == "Final answer"
+
+    def test_concatenates_multiple_substantive_assistant_entries(self):
+        """If the assistant answer is split across multiple entries, join them."""
+        entries = [
+            {"role": "user", "text": "Q1", "timestamp": "2025-01-01"},
+            {"role": "assistant", "text": "Part 1", "timestamp": "2025-01-01"},
+            {"role": "assistant", "text": "Part 2", "timestamp": "2025-01-01"},
+        ]
+
+        turns = extract_turns(entries)
+        assert len(turns) == 1
+        assert turns[0][1]["text"] == "Part 1\n\nPart 2"
 
 
 class TestParseChatMetadata:

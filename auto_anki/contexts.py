@@ -11,6 +11,7 @@ This module owns:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -204,27 +205,107 @@ def parse_chat_entries(body: str) -> List[Dict[str, Any]]:
 def extract_turns(
     entries: Sequence[Dict[str, Any]],
 ) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
-    turns: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
-    i = 0
-    while i < len(entries):
-        entry = entries[i]
-        if entry["role"] != "user":
-            i += 1
-            continue
-        user_entry = entry
-        j = i + 1
-        assistant_entry: Optional[Dict[str, Any]] = None
-        while j < len(entries):
-            candidate = entries[j]
-            if candidate["role"] == "assistant":
-                assistant_entry = candidate
-                break
-            j += 1
-        if assistant_entry and user_entry["text"] and assistant_entry["text"]:
-            turns.append((user_entry, assistant_entry))
-            i = j + 1
+    def is_non_content_assistant_message(text: str) -> bool:
+        """Heuristic: ignore assistant/tooling chatter and internal metadata.
+
+        Many exports include intermediate assistant messages like:
+        - {"content_type":"thoughts", ...}
+        - {"content_type":"code", "text":"{...search_query...}"}
+        - {"content_type":"reasoning_recap", ...}
+        """
+        stripped = text.strip()
+        if not (stripped.startswith("{") and stripped.endswith("}")):
+            return False
+        try:
+            payload = json.loads(stripped)
+        except Exception:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        content_type = str(payload.get("content_type") or "").lower()
+        if content_type in {"thoughts", "reasoning_recap", "code"}:
+            return True
+        return False
+
+    def combine_assistant_entries(
+        assistant_entries: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not assistant_entries:
+            return None
+
+        substantive = [
+            e.get("text", "").strip()
+            for e in assistant_entries
+            if e.get("text", "").strip() and not is_non_content_assistant_message(e["text"])
+        ]
+        if substantive:
+            combined_text = "\n\n".join(substantive).strip()
         else:
-            i += 1
+            combined_text = (assistant_entries[-1].get("text") or "").strip()
+
+        if not combined_text:
+            return None
+
+        return {
+            "role": "assistant",
+            "timestamp": assistant_entries[-1].get("timestamp"),
+            "text": combined_text,
+        }
+
+    turns: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    pending_user: Optional[Dict[str, Any]] = None
+    pending_assistants: List[Dict[str, Any]] = []
+
+    def flush_pending_turn() -> None:
+        nonlocal pending_user, pending_assistants
+        if pending_user is None:
+            pending_assistants = []
+            return
+        assistant_entry = combine_assistant_entries(pending_assistants)
+        if assistant_entry and pending_user.get("text", "").strip():
+            turns.append((pending_user, assistant_entry))
+        pending_user = None
+        pending_assistants = []
+
+    for entry in entries:
+        role = (entry.get("role") or "").lower()
+        text = (entry.get("text") or "").strip()
+
+        if role == "user":
+            if pending_user is None:
+                if not text:
+                    continue
+                pending_user = dict(entry)
+                pending_user["text"] = text
+                pending_assistants = []
+                continue
+
+            # If we've already started collecting assistant responses, this is a new turn.
+            if pending_assistants:
+                flush_pending_turn()
+                if not text:
+                    continue
+                pending_user = dict(entry)
+                pending_user["text"] = text
+                continue
+
+            # Consecutive user messages before any assistant response: merge them.
+            if text:
+                prior_text = (pending_user.get("text") or "").strip()
+                pending_user["text"] = (prior_text + "\n\n" + text).strip()
+            continue
+
+        if role == "assistant":
+            if pending_user is None or not text:
+                continue
+            pending_assistants.append(dict(entry, text=text))
+            continue
+
+        # tool (and any other roles) do not affect pairing; they can occur between
+        # assistant messages when exports include tool I/O.
+        continue
+
+    flush_pending_turn()
     return turns
 
 
