@@ -80,7 +80,7 @@ STOPWORDS = {
 }
 
 ENTRY_RE = re.compile(
-    r"^\[(?P<timestamp>[^\]]+)\]\s+(?P<role>user|assistant|tool):\s*$", re.IGNORECASE
+    r"^\[(?P<timestamp>[^\]]+)\]\s+(?P<role>user|human|assistant|tool):\s*$", re.IGNORECASE
 )
 
 
@@ -188,8 +188,12 @@ def parse_chat_entries(body: str) -> List[Dict[str, Any]]:
             if current is not None:
                 current["text"] = "\n".join(current["lines"]).strip()
                 entries.append(current)
+            role = match.group("role").lower()
+            # Normalize Claude's "human" role to "user" for consistency
+            if role == "human":
+                role = "user"
             current = {
-                "role": match.group("role").lower(),
+                "role": role,
                 "timestamp": match.group("timestamp").strip(),
                 "lines": [],
             }

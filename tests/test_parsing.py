@@ -262,3 +262,45 @@ class TestParseChatMetadata:
         header = "- URL:   https://example.com   \n- Title:  Some Title  "
         metadata = parse_chat_metadata(header)
         assert metadata.get("url") == "https://example.com"
+
+
+class TestClaudeFormatParsing:
+    """Tests for parsing Claude conversation exports."""
+
+    def test_claude_human_role_normalized(self):
+        """Claude exports use 'human' instead of 'user' - should be normalized."""
+        markdown = """[2025-12-09 01:54:22] human:
+How would you explain X?
+
+[2025-12-09 01:54:51] assistant:
+Here's the explanation..."""
+
+        entries = parse_chat_entries(markdown)
+        assert len(entries) == 2
+        assert entries[0]["role"] == "user"  # normalized from "human"
+        assert entries[0]["timestamp"] == "2025-12-09 01:54:22"
+        assert "How would you explain" in entries[0]["text"]
+        assert entries[1]["role"] == "assistant"
+
+    def test_claude_conversation_creates_turns(self):
+        """Claude conversations with human/assistant should create proper turns."""
+        markdown = """[2025-12-09 01:54:22] human:
+What is Python?
+
+[2025-12-09 01:54:51] assistant:
+Python is a programming language.
+
+[2025-12-09 01:55:00] human:
+Can you give an example?
+
+[2025-12-09 01:55:10] assistant:
+Sure, here's a simple example..."""
+
+        from auto_anki.contexts import extract_turns
+        entries = parse_chat_entries(markdown)
+        turns = extract_turns(entries)
+
+        assert len(turns) == 2
+        assert turns[0][0]["text"] == "What is Python?"
+        assert "programming language" in turns[0][1]["text"]
+        assert turns[1][0]["text"] == "Can you give an example?"
