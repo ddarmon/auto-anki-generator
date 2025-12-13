@@ -252,6 +252,21 @@ class StateTracker:
         """Check if a conversation file has been processed."""
         return str(file_path) in self.data.get("processed_files", {})
 
+    def is_file_zero_card(self, file_path: Path) -> bool:
+        """Check if a file was processed but generated 0 cards."""
+        info = self.data.get("processed_files", {}).get(str(file_path), {})
+        return info.get("cards_generated", 0) == 0 and str(file_path) in self.data.get(
+            "processed_files", {}
+        )
+
+    def get_zero_card_files(self) -> list:
+        """Return list of file paths that were processed but generated 0 cards."""
+        return [
+            path
+            for path, info in self.data.get("processed_files", {}).items()
+            if info.get("cards_generated", 0) == 0
+        ]
+
     def mark_file_processed(
         self, file_path: Path, cards_generated: int = 0
     ) -> None:

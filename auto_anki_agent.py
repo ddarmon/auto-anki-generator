@@ -123,6 +123,16 @@ def parse_args() -> argparse.Namespace:
         help="Only process conversation files not yet in the state file.",
     )
     parser.add_argument(
+        "--reprocess-zero-card-files",
+        action="store_true",
+        help="Also reprocess files that previously generated 0 cards (use with --unprocessed-only).",
+    )
+    parser.add_argument(
+        "--only-zero-card-files",
+        action="store_true",
+        help="Process ONLY files that previously generated 0 cards (exclusive backfill mode).",
+    )
+    parser.add_argument(
         "--state-file",
         help="Path to JSON state file used to skip already-seen contexts (default: <script_dir>/.auto_anki_agent_state.json).",
     )
@@ -645,7 +655,10 @@ def main() -> None:
             print(f"  Marked {len(skipped_duplicate_ids)} duplicate conversations as seen in state.")
 
     if not conversations:
-        print("No new conversations found; exiting.")
+        if getattr(args, "only_zero_card_files", False):
+            print("No zero-card files found for date range; exiting.")
+        else:
+            print("No new conversations found; exiting.")
         return
 
     # Prepare run directory

@@ -15,6 +15,7 @@ The system is now production-ready with major features implemented:
 -   **AnkiConnect integration**: Direct import to Anki
 -   **Two-stage LLM pipeline**: Fast filter + slow generation
 -   **Conversation-level processing**: LLM sees full learning journey
+-   **Zero-card file backfill**: `--only-zero-card-files`, `--reprocess-zero-card-files`, `BACKFILL_MODE`
 
 ### 🚧 Remaining Opportunities
 -   **Performance**: Stage 2 now parallelized; further optimization possible
@@ -1630,7 +1631,8 @@ intelligent learning companion. The highest-leverage improvements are now comple
 6.  ~~**Parallel Stage 2**~~ ✅ **DONE** - 3 concurrent workers for card generation
 7.  ~~**Full context to Stage 1**~~ ✅ **DONE** - LLM judges quality directly
 8.  ~~**Pluggable LLM backends**~~ ✅ **DONE** - Codex CLI + Claude Code
-9.  **Active learning** - Biggest remaining potential
+9.  ~~**Zero-card file backfill**~~ ✅ **DONE** - Reprocess files after parsing bug fixes
+10. **Active learning** - Biggest remaining potential
 
 **Recent enhancements:**
 -   **Pluggable LLM backend abstraction** (`auto_anki/llm_backends/`)
@@ -1640,6 +1642,11 @@ intelligent learning companion. The highest-leverage improvements are now comple
 -   Heuristics now **optional** (`--use-filter-heuristics`, off by default)
 -   Stage 1 receives **full conversations** (no truncation)
 -   Stage 2 runs with **3 parallel workers** via ThreadPoolExecutor
+-   **Zero-card file backfill** - Reprocess files that generated 0 cards
+    -   `--only-zero-card-files`: Exclusive backfill mode
+    -   `--reprocess-zero-card-files`: Additive mode with `--unprocessed-only`
+    -   `BACKFILL_MODE=1` for batch script
+    -   Fixes for Claude `human:` role parsing
 
 **Remaining opportunities:**
 -   Plugin architecture for custom scorers/parsers

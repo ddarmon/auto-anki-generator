@@ -89,6 +89,8 @@ python3 auto_anki_agent.py \
   - Format: `2025-10` (entire month)
   - Format: `2025-10-01:2025-10-31` (specific range)
 - `--unprocessed-only`: Only process files not yet in state file
+- `--reprocess-zero-card-files`: Also reprocess files that previously generated 0 cards (use with `--unprocessed-only`)
+- `--only-zero-card-files`: Process ONLY files that previously generated 0 cards (exclusive backfill mode)
 - `--chat-root PATH`: Root directory containing conversation files
 - `--decks DECK [DECK ...]`: Anki deck names to load existing cards from (overrides config)
 - `--anki-cache-ttl MINUTES`: Cache TTL for AnkiConnect card fetch (default: 5)
@@ -331,6 +333,26 @@ python3 auto_anki_agent.py \
   --verbose
 ```
 
+### Backfill Zero-Card Files
+
+If conversations were processed but generated 0 cards (e.g., due to parsing bugs), you can reprocess them:
+
+```bash
+# Preview what zero-card files exist for a date range
+uv run auto-anki --only-zero-card-files --date-range 2025-12 --dry-run --verbose
+
+# Reprocess ONLY zero-card files (dedicated backfill)
+uv run auto-anki --only-zero-card-files --date-range 2025-12 --verbose
+
+# Process both unprocessed AND zero-card files together
+uv run auto-anki --unprocessed-only --reprocess-zero-card-files --date-range 2025-12 --verbose
+```
+
+**Use cases:**
+- After fixing a parsing bug that caused conversations to be skipped
+- When LLM errors caused a batch to generate no cards
+- To retry conversations that may now yield cards with improved prompts
+
 ## Tips
 
 1. **Start with `--dry-run`**: Preview prompts before spending tokens
@@ -362,6 +384,11 @@ python3 auto_anki_agent.py \
 - Score threshold too high (lower `--min-score`)
 - Date range excludes all files
 
+### "No zero-card files found"
+
+- No files in the date range were processed with 0 cards generated
+- The backfill for this date range is complete
+
 ### State file corrupted
 
 ```bash
@@ -370,8 +397,33 @@ rm .auto_anki_agent_state.json
 
 ### Want to reprocess files
 
-- Remove from state file manually, or
-- Delete state file and start fresh
+**Option 1: Backfill zero-card files (recommended)**
+
+If files were processed but generated 0 cards:
+
+```bash
+uv run auto-anki --only-zero-card-files --date-range 2025-12 --verbose
+```
+
+**Option 2: Manual state edit**
+
+Remove specific files from `processed_files` in `.auto_anki_agent_state.json`
+
+**Option 3: Full reset**
+
+Delete state file and start fresh (reprocesses everything):
+
+```bash
+rm .auto_anki_agent_state.json
+```
+
+### Conversations were skipped silently
+
+This can happen if:
+- The conversation markdown format wasn't recognized (check for `user:` or `human:` roles)
+- The file had no valid turns after parsing
+
+Use `--verbose` to see which files are being processed and why some might be skipped.
 
 ## Architecture
 
@@ -526,10 +578,15 @@ uv run auto-anki-progress --json
 For processing large backlogs of conversations, use the batch automation script:
 
 ```bash
+# Normal mode: process unprocessed files
 ./scripts/auto_anki_batch.sh
+
+# Backfill mode: reprocess zero-card files only
+BACKFILL_MODE=1 ./scripts/auto_anki_batch.sh
+
 # Press Ctrl+C to stop gracefully
 # macOS: allow sleep (disable caffeinate)
-# PREVENT_SLEEP=0 ./scripts/auto_anki_batch.sh
+PREVENT_SLEEP=0 ./scripts/auto_anki_batch.sh
 ```
 
 ### Features
@@ -546,9 +603,13 @@ For processing large backlogs of conversations, use the batch automation script:
 1. Detects configured LLM backend from `auto_anki_config.json` (`codex` or `claude-code`)
 2. Checks 5h window usage via appropriate script (`codex-usage.sh` or `claude-usage.sh`)
 3. If usage exceeds pace + 10%, waits 15 minutes (wall-clock)
-4. Runs `uv run auto-anki --date-range YYYY-MM --unprocessed-only --verbose`
+4. Runs auto-anki command based on mode:
+   - **Normal mode**: `uv run auto-anki --date-range YYYY-MM --unprocessed-only --verbose`
+   - **Backfill mode** (`BACKFILL_MODE=1`): `uv run auto-anki --date-range YYYY-MM --only-zero-card-files --verbose`
 5. Shows progress via `uv run auto-anki-progress`
-6. When "No new conversations found", advances to previous month
+6. Detects exhaustion:
+   - Normal mode: "No new conversations found" → advances to previous month
+   - Backfill mode: "No zero-card files found" → advances to previous month
 7. Loops indefinitely until manually stopped
 
 ### Requirements
@@ -567,8 +628,19 @@ Edit `scripts/auto_anki_batch.sh` to customize:
 PACE_BUFFER=10          # Wait threshold: pace + this value (%)
 WAIT_DURATION=900       # Wait time in seconds (default: 15 min)
 PREVENT_SLEEP=1         # macOS: prevent idle sleep (disable with PREVENT_SLEEP=0)
+BACKFILL_MODE=0         # Set to 1 to reprocess zero-card files instead of unprocessed files
 END_YEAR=2022           # How far back to process
 END_MONTH=1
+```
+
+Or set environment variables at runtime:
+
+```bash
+# Run backfill batch
+BACKFILL_MODE=1 ./scripts/auto_anki_batch.sh
+
+# Run without preventing sleep
+PREVENT_SLEEP=0 ./scripts/auto_anki_batch.sh
 ```
 
 ### Estimate Time to Completion
@@ -629,6 +701,7 @@ Estimated time:          41.5 hours (1.7 days)
 - [x] ~~Batch automation with usage throttling~~ ✅ **DONE!** (`scripts/auto_anki_batch.sh`)
 - [x] ~~Pluggable LLM backends~~ ✅ **DONE!** (Codex CLI + Claude Code)
 - [x] ~~Post-generation duplicate detection~~ ✅ **DONE!** (Semantic similarity vs full card DB, UI warnings)
+- [x] ~~Zero-card file backfill~~ ✅ **DONE!** (`--only-zero-card-files`, `--reprocess-zero-card-files`, `BACKFILL_MODE`)
 - [ ] Tag taxonomy management
 - [ ] Multi-deck routing logic with ML
 - [ ] Topic distribution visualization

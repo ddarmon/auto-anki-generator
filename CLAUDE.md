@@ -48,6 +48,8 @@
 | `enrich_cards_with_duplicate_flags()` | `dedup.py` | Post-generation semantic dedup against full card DB |
 | `build_conversation_prompt()` | `codex.py` | Build LLM prompt with system instructions, deck list, conversations |
 | `run_codex_pipeline()` | `codex.py` | Two-stage LLM execution with parallel Stage 2 |
+| `is_file_zero_card()` | `state.py` | Check if file was processed but generated 0 cards |
+| `get_zero_card_files()` | `state.py` | List all files that generated 0 cards (for backfill) |
 
 ## File Organization
 
@@ -106,11 +108,17 @@ uv run auto-anki-import ~/Downloads/conversations.json
 # Batch processing with throttling
 ./scripts/auto_anki_batch.sh
 
+# Backfill zero-card files (reprocess files that generated 0 cards)
+uv run auto-anki --only-zero-card-files --date-range 2025-12 --verbose
+
+# Batch backfill mode
+BACKFILL_MODE=1 ./scripts/auto_anki_batch.sh
+
 # Progress dashboard
 uv run auto-anki-progress
 ```
 
-**Key flags:** `--dry-run`, `--verbose`, `--unprocessed-only`, `--date-range`, `--llm-backend`, `--llm-model`, `--llm-model-stage1/2`
+**Key flags:** `--dry-run`, `--verbose`, `--unprocessed-only`, `--date-range`, `--llm-backend`, `--llm-model`, `--llm-model-stage1/2`, `--only-zero-card-files`, `--reprocess-zero-card-files`
 
 ## Interactive Review UI
 

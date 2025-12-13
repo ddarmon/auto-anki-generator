@@ -787,8 +787,29 @@ def harvest_conversations(
     # Apply filters
     if date_filter:
         files = [f for f in files if date_filter.matches(f)]
-    if args.unprocessed_only and state_tracker:
-        files = [f for f in files if not state_tracker.is_file_processed(f)]
+
+    # Handle three file selection modes:
+    # 1. --only-zero-card-files: ONLY files that generated 0 cards
+    # 2. --unprocessed-only --reprocess-zero-card-files: unprocessed OR zero-card
+    # 3. --unprocessed-only: only unprocessed (default)
+    only_zero = getattr(args, "only_zero_card_files", False)
+    reprocess_zero = getattr(args, "reprocess_zero_card_files", False)
+
+    if only_zero and state_tracker:
+        # Exclusive mode: ONLY zero-card files
+        files = [f for f in files if state_tracker.is_file_zero_card(f)]
+    elif args.unprocessed_only and state_tracker:
+        if reprocess_zero:
+            # Additive mode: unprocessed OR zero-card
+            files = [
+                f
+                for f in files
+                if not state_tracker.is_file_processed(f)
+                or state_tracker.is_file_zero_card(f)
+            ]
+        else:
+            # Normal mode: only unprocessed
+            files = [f for f in files if not state_tracker.is_file_processed(f)]
 
     if args.max_chat_files:
         files = files[: args.max_chat_files]
@@ -820,8 +841,13 @@ def harvest_conversations(
         if conv is None:
             continue
 
-        # Skip if already processed
-        if conv.conversation_id in seen_conversation_ids:
+        # Skip if already processed (unless reprocessing zero-card files)
+        is_zero_card_source = (
+            (only_zero or reprocess_zero)
+            and state_tracker
+            and state_tracker.is_file_zero_card(path)
+        )
+        if conv.conversation_id in seen_conversation_ids and not is_zero_card_source:
             continue
 
         # Filter by minimum aggregate score (only if heuristics enabled)

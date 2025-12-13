@@ -45,6 +45,10 @@ PACE_BUFFER=10          # Wait if usage% > pace% + PACE_BUFFER
 WAIT_DURATION=900       # 15 minutes in seconds
 PREVENT_SLEEP=${PREVENT_SLEEP:-1}  # macOS: use caffeinate to prevent idle sleep while running
 
+# Backfill mode: reprocess files that generated 0 cards
+# Usage: BACKFILL_MODE=1 ./scripts/auto_anki_batch.sh
+BACKFILL_MODE=${BACKFILL_MODE:-0}
+
 # Retry settings
 MAX_RETRIES=3
 RETRY_DELAY=60          # seconds between retries
@@ -317,10 +321,19 @@ run_auto_anki() {
         # also capturing it for post-run inspection. We send the live stream
         # to FD 3 so it bypasses any surrounding command substitutions.
         output_file=$(mktemp)
-        uv run auto-anki \
-            --date-range "$month" \
-            --unprocessed-only \
-            --verbose 2>&1 | tee -a "$LOG_FILE" | tee "$output_file" >&3
+        if [[ "$BACKFILL_MODE" == "1" ]]; then
+            # Backfill mode: reprocess files that generated 0 cards
+            uv run auto-anki \
+                --only-zero-card-files \
+                --date-range "$month" \
+                --verbose 2>&1 | tee -a "$LOG_FILE" | tee "$output_file" >&3
+        else
+            # Normal mode: process unprocessed files
+            uv run auto-anki \
+                --date-range "$month" \
+                --unprocessed-only \
+                --verbose 2>&1 | tee -a "$LOG_FILE" | tee "$output_file" >&3
+        fi
         exit_code=${PIPESTATUS[0]}
         output=$(cat "$output_file")
         rm -f "$output_file"
@@ -378,6 +391,11 @@ main() {
     log_message "INFO" "========================================"
     log_message "INFO" "Log file: $LOG_FILE"
     log_message "INFO" "LLM Backend: $(get_llm_backend)"
+    if [[ "$BACKFILL_MODE" == "1" ]]; then
+        log_message "INFO" "Mode: BACKFILL (reprocessing zero-card files)"
+    else
+        log_message "INFO" "Mode: Normal (processing unprocessed files)"
+    fi
     log_message "INFO" "Throttle: wait if usage > pace + ${PACE_BUFFER}%"
     log_message "INFO" "Wait duration: $((WAIT_DURATION / 60)) minutes"
     log_message "INFO" "Press Ctrl+C to stop gracefully"
@@ -415,11 +433,19 @@ main() {
         show_progress
         echo ""
 
-        # Check if month is exhausted (no more unprocessed files)
-        if echo "$output" | grep -q "No new conversations found"; then
-            log_message "INFO" "Month $current_month exhausted, moving to next month"
-            month_index=$((month_index + 1))
-            continue
+        # Check if month is exhausted (no more files to process)
+        if [[ "$BACKFILL_MODE" == "1" ]]; then
+            if echo "$output" | grep -q "No zero-card files found"; then
+                log_message "INFO" "Month $current_month exhausted (backfill), moving to next month"
+                month_index=$((month_index + 1))
+                continue
+            fi
+        else
+            if echo "$output" | grep -q "No new conversations found"; then
+                log_message "INFO" "Month $current_month exhausted, moving to next month"
+                month_index=$((month_index + 1))
+                continue
+            fi
         fi
 
         # If run failed after all retries, move to next month
