@@ -7,11 +7,11 @@
 If you've exported new conversations from ChatGPT or Claude:
 
 ```bash
-# Import conversations.json to your markdown directory
+# Import conversations.json to your Markdown directory
 uv run auto-anki-import ~/Downloads/conversations.json -v
 ```
 
-This converts the JSON export into markdown files that auto-anki can process.
+This converts the JSON export into Markdown files that auto-anki can process.
 
 ### 1. Process New Conversations (Recommended)
 
@@ -22,7 +22,7 @@ python3 auto_anki_agent.py --unprocessed-only --verbose
 
 This will:
 - ✅ Only process conversations not yet in state file
-- ✅ Generate markdown output for review
+- ✅ Generate Markdown output for review
 - ✅ Update state to prevent reprocessing
 - ✅ Show progress with verbose output
 
@@ -36,7 +36,7 @@ Or open in your text editor to review and select cards to import.
 
 ### 3. Import Selected Cards to Anki
 
-Manually copy/paste cards you want to keep from the markdown file into your Anki HTML collections or import dialog.
+Manually copy/paste cards you want to keep from the Markdown file into your Anki HTML collections or import dialog.
 
 ## Common Commands
 
