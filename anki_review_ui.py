@@ -29,6 +29,21 @@ import pandas as pd
 
 from auto_anki.codex import parse_codex_response_robust, run_codex_exec
 
+DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD = 0.7  # Default UI threshold for treating cards as duplicates
+
+
+def _is_duplicate_with_ui_threshold(
+    dup_flags: Dict,
+    threshold: float = DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD,
+) -> Tuple[bool, float]:
+    """Evaluate duplicate status using provided threshold, falling back to stored flag."""
+    threshold = DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD if threshold is None else threshold
+    similarity = dup_flags.get("similarity_score")
+    if isinstance(similarity, (int, float)):
+        return similarity >= threshold, float(similarity)
+    fallback_similarity = dup_flags.get("similarity_score") or 0.0
+    return dup_flags.get("is_likely_duplicate", False), float(fallback_similarity)
+
 # Import AnkiConnect client
 try:
     from anki_connect import AnkiConnectClient, AnkiConnectError
@@ -216,6 +231,7 @@ class CardReviewSession:
         deck_filter: str = "all",
         min_confidence: float = 0.0,
         duplicate_filter: str = "all",
+        duplicate_threshold: float = DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD,
     ):
         """Apply filters to card list and update filtered_indices."""
         self.filtered_indices = []
@@ -231,7 +247,7 @@ class CardReviewSession:
             # Duplicate filter
             if duplicate_filter != "all":
                 dup_flags = card.get('duplicate_flags', {})
-                is_dup = dup_flags.get('is_likely_duplicate', False)
+                is_dup, _similarity = _is_duplicate_with_ui_threshold(dup_flags, duplicate_threshold)
                 if duplicate_filter == "duplicates_only" and not is_dup:
                     continue
                 if duplicate_filter == "unique_only" and is_dup:
@@ -989,6 +1005,14 @@ app_ui = ui.page_fluid(
                             "unique_only": "Unique Cards Only",
                         },
                     ),
+                    ui.input_slider(
+                        "duplicate_threshold",
+                        "Duplicate similarity threshold:",
+                        min=0.0,
+                        max=1.0,
+                        value=DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD,
+                        step=0.01,
+                    ),
                     ui.input_action_button("btn_apply_filters", "Apply Filters", class_="btn-primary", width="100%"),
                     ui.output_text("filter_message", inline=True),
                 ),
@@ -1418,14 +1442,14 @@ def server(input: Inputs, output: Outputs, session: Session):
         if not card:
             return ui.div()
 
+        threshold = input.duplicate_threshold()
         dup_flags = card.get('duplicate_flags')
         if not dup_flags:
             return ui.div()  # No duplicate flags - old format or post-dedup skipped
 
-        is_dup = dup_flags.get('is_likely_duplicate', False)
+        is_dup, similarity = _is_duplicate_with_ui_threshold(dup_flags, threshold)
         if not is_dup:
             # Card is unique - show a small green indicator
-            similarity = dup_flags.get('similarity_score', 0)
             return ui.div(
                 {"style": "padding: 8px; margin: 10px 0; background-color: #d4edda; border-left: 4px solid #28a745; border-radius: 4px;"},
                 ui.span(
@@ -1435,7 +1459,6 @@ def server(input: Inputs, output: Outputs, session: Session):
             )
 
         # Card is flagged as likely duplicate
-        similarity = dup_flags.get('similarity_score', 0)
         matched = dup_flags.get('matched_card', {})
 
         # Color based on severity
@@ -1884,10 +1907,12 @@ def server(input: Inputs, output: Outputs, session: Session):
             deck = input.filter_deck()
             min_conf = input.filter_confidence()
             dup_filter = input.filter_duplicate()
+            dup_threshold = input.duplicate_threshold()
             session.apply_filters(
                 deck_filter=deck,
                 min_confidence=min_conf,
                 duplicate_filter=dup_filter,
+                duplicate_threshold=dup_threshold,
             )
 
             # Reset to first filtered card
