@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import textwrap
@@ -441,7 +442,16 @@ def parse_codex_response_robust(
                 continue
         raise last_error or json.JSONDecodeError("No JSON object found", text, 0)
 
+    def escape_invalid_backslashes(text: str) -> str:
+        """
+        JSON only permits escapes for \" \\ / b f n r t uXXXX.
+        Some model outputs include LaTeX-like sequences such as \\( ... \\),
+        which need the backslash doubled to become valid JSON.
+        """
+        return re.sub(r"\\(?![\"\\/bfnrtu])", r"\\\\", text)
+
     cleaned = strip_markdown_fences(response_text)
+    escaped = escape_invalid_backslashes(cleaned)
     raw = response_text.strip()
 
     strategies: List[tuple[str, Any]] = []
@@ -452,6 +462,9 @@ def parse_codex_response_robust(
 
     # Strategy 2: Strip markdown fences (common when LLM wraps JSON in ```json blocks).
     strategies.append(("Markdown stripped", lambda: json.loads(cleaned)))
+
+    # Strategy 2b: Escape invalid backslashes (common when LaTeX math uses \\( \\)).
+    strategies.append(("Backslash escaped", lambda: json.loads(escaped)))
 
     # Strategy 3: Extract a JSON value from a response with extra leading/trailing text.
     strategies.append(("JSON extracted", lambda: raw_decode_first_json(cleaned)))
