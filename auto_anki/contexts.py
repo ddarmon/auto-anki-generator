@@ -83,6 +83,8 @@ ENTRY_RE = re.compile(
     r"^\[(?P<timestamp>[^\]]+)\]\s+(?P<role>user|human|assistant|tool):\s*$", re.IGNORECASE
 )
 
+ASSISTANT_START_PLACEHOLDER = "Assistant started conversation (no user prompt in export)"
+
 
 @dataclass
 class ChatTurn:
@@ -259,6 +261,8 @@ def extract_turns(
     turns: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     pending_user: Optional[Dict[str, Any]] = None
     pending_assistants: List[Dict[str, Any]] = []
+    leading_assistants: List[Dict[str, Any]] = []
+    seen_user_entry = False
 
     def flush_pending_turn() -> None:
         nonlocal pending_user, pending_assistants
@@ -271,11 +275,27 @@ def extract_turns(
         pending_user = None
         pending_assistants = []
 
+    def flush_leading_assistants() -> None:
+        """Emit a synthetic turn for assistant messages that precede any user prompt."""
+        nonlocal leading_assistants
+        assistant_entry = combine_assistant_entries(leading_assistants)
+        if assistant_entry:
+            synthetic_user = {
+                "role": "user",
+                "timestamp": assistant_entry.get("timestamp"),
+                "text": ASSISTANT_START_PLACEHOLDER,
+            }
+            turns.append((synthetic_user, assistant_entry))
+        leading_assistants = []
+
     for entry in entries:
         role = (entry.get("role") or "").lower()
         text = (entry.get("text") or "").strip()
 
         if role == "user":
+            seen_user_entry = True
+            if leading_assistants:
+                flush_leading_assistants()
             if pending_user is None:
                 if not text:
                     continue
@@ -300,7 +320,14 @@ def extract_turns(
             continue
 
         if role == "assistant":
-            if pending_user is None or not text:
+            if pending_user is None:
+                if seen_user_entry:
+                    continue
+                if not text:
+                    continue
+                leading_assistants.append(dict(entry, text=text))
+                continue
+            if not text:
                 continue
             pending_assistants.append(dict(entry, text=text))
             continue
@@ -310,6 +337,8 @@ def extract_turns(
         continue
 
     flush_pending_turn()
+    if leading_assistants:
+        flush_leading_assistants()
     return turns
 
 
@@ -891,4 +920,5 @@ __all__ = [
     "QUESTION_WORDS",
     "STOPWORDS",
     "ENTRY_RE",
+    "ASSISTANT_START_PLACEHOLDER",
 ]

@@ -1,7 +1,12 @@
 """Tests for chat parsing functions in auto_anki/contexts.py."""
 
 import pytest
-from auto_anki.contexts import parse_chat_entries, extract_turns, parse_chat_metadata
+from auto_anki.contexts import (
+    ASSISTANT_START_PLACEHOLDER,
+    extract_turns,
+    parse_chat_entries,
+    parse_chat_metadata,
+)
 
 
 class TestParseChatEntries:
@@ -121,17 +126,32 @@ class TestExtractTurns:
         turns = extract_turns(entries)
         assert len(turns) == 0
 
-    def test_skips_leading_assistant(self):
-        """Assistant entry without preceding user should be skipped."""
+    def test_leading_assistant_preserved_with_placeholder(self):
+        """Assistant-first conversations should emit a synthetic user prompt turn."""
         entries = [
-            {"role": "assistant", "text": "Orphan", "timestamp": "2025-01-01"},
-            {"role": "user", "text": "Q1", "timestamp": "2025-01-01"},
-            {"role": "assistant", "text": "A1", "timestamp": "2025-01-01"},
+            {"role": "assistant", "text": "Orphan", "timestamp": "2025-01-01 09:00"},
+            {"role": "user", "text": "Q1", "timestamp": "2025-01-01 10:00"},
+            {"role": "assistant", "text": "A1", "timestamp": "2025-01-01 10:01"},
+        ]
+
+        turns = extract_turns(entries)
+        assert len(turns) == 2
+        assert turns[0][0]["text"] == ASSISTANT_START_PLACEHOLDER
+        assert turns[0][1]["text"] == "Orphan"
+        assert turns[1][0]["text"] == "Q1"
+        assert turns[1][1]["text"] == "A1"
+
+    def test_all_assistant_entries_emit_placeholder_turn(self):
+        """If no user prompts exist, keep assistant content with placeholder user text."""
+        entries = [
+            {"role": "assistant", "text": "Intro", "timestamp": "2025-01-01"},
+            {"role": "assistant", "text": "Follow-up", "timestamp": "2025-01-01"},
         ]
 
         turns = extract_turns(entries)
         assert len(turns) == 1
-        assert turns[0][0]["text"] == "Q1"
+        assert turns[0][0]["text"] == ASSISTANT_START_PLACEHOLDER
+        assert turns[0][1]["text"] == "Intro\n\nFollow-up"
 
     def test_skips_tool_entries(self):
         """Tool entries should not affect pairing."""
