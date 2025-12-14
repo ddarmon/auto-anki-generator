@@ -764,6 +764,15 @@ def main() -> None:
                         for d in decisions
                         if isinstance(d, dict) and d.get("keep") is True and d.get("conversation_id")
                     }
+                    # Also mark Stage-1 rejected conversations as seen so they
+                    # don't get resurfaced on the next batch script pass.
+                    rejected_conv_ids = {
+                        conv.conversation_id
+                        for conv in chunk
+                        if conv.conversation_id not in kept_conv_ids
+                    }
+                    if rejected_conv_ids:
+                        new_conversation_ids.extend(rejected_conv_ids)
                     kept_count = len(kept_conv_ids)
                     chunk_stats["stage1_kept"] += kept_count
                     chunk_stats["stage1_total"] += len(chunk)
