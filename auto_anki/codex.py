@@ -22,6 +22,7 @@ from json_repair import repair_json
 
 from auto_anki.cards import Card
 from auto_anki.contexts import ChatTurn, Conversation
+from auto_anki.config_types import LLMPipelineConfig
 from auto_anki.llm_backends import LLMConfig, get_backend, run_backend
 
 
@@ -58,7 +59,7 @@ def truncate_mega_prompt(text: str, max_chars: int = MAX_USER_PROMPT_CHARS) -> s
 def build_codex_prompt(
     cards: List[Card],
     contexts: List[ChatTurn],
-    args: Any,
+    config: LLMPipelineConfig,
 ) -> str:
     """
     DEPRECATED: per-turn Codex pipeline has been replaced by the
@@ -256,7 +257,7 @@ def build_codex_prompt(
 
 def build_codex_filter_prompt(
     contexts: List[ChatTurn],
-    args: Any,
+    config: LLMPipelineConfig,
 ) -> str:
     """
     Build the stage-1 filtering prompt for the two-stage pipeline.
@@ -331,7 +332,7 @@ def run_codex_exec(
     prompt: str,
     chunk_idx: int,
     run_dir: Path,
-    args: Any,
+    config: LLMPipelineConfig,
     *,
     model_override: Optional[str] = None,
     reasoning_override: Optional[str] = None,
@@ -346,7 +347,7 @@ def run_codex_exec(
         prompt: The prompt text to send to the LLM.
         chunk_idx: Chunk index for labeling artifacts.
         run_dir: Directory for saving run artifacts.
-        args: CLI arguments namespace.
+        config: Typed configuration.
         model_override: Optional model override.
         reasoning_override: Optional reasoning effort override.
         label: Optional label for artifact filenames.
@@ -358,25 +359,25 @@ def run_codex_exec(
         RuntimeError: If the LLM execution fails.
     """
     # Get the backend (default to codex for backward compatibility)
-    backend_name = getattr(args, "llm_backend", None) or "codex"
+    backend_name = config.llm_backend or "codex"
     backend = get_backend(backend_name)
 
     # Build config from args, allowing overrides
     # For codex: use codex_model; for claude-code: use llm_model
     if backend_name == "codex":
-        default_model = getattr(args, "codex_model", None) or "gpt-5.1"
+        default_model = config.codex_model or "gpt-5.1"
     else:
-        default_model = getattr(args, "llm_model", None)
+        default_model = config.llm_model
 
     model = model_override or default_model
-    reasoning = reasoning_override or getattr(args, "model_reasoning_effort", None)
+    reasoning = reasoning_override or config.model_reasoning_effort
 
     # Collect extra args
     extra_args: List[str] = []
-    for extra in getattr(args, "codex_extra_arg", []) or []:
+    for extra in config.codex_extra_arg or []:
         if extra:
             extra_args.extend(shlex.split(extra))
-    for extra in getattr(args, "llm_extra_arg", []) or []:
+    for extra in config.llm_extra_arg or []:
         if extra:
             extra_args.extend(shlex.split(extra))
 
@@ -523,7 +524,7 @@ def chunked(seq: Sequence[Any], size: int) -> Iterable[List[Any]]:
 def run_codex_pipeline(
     cards_for_prompt: List[Card],
     contexts: List[ChatTurn],
-    args: Any,
+    config: LLMPipelineConfig,
     state_tracker: Any,
     run_dir: Path,
     output_dir: Path,
@@ -550,34 +551,34 @@ def run_codex_pipeline(
         "stage1_total": 0,
     }
 
-    total_chunks = (len(contexts) + args.contexts_per_run - 1) // args.contexts_per_run
-    if args.verbose:
+    total_chunks = (len(contexts) + config.contexts_per_run - 1) // config.contexts_per_run
+    if config.verbose:
         print(
-            f"\nProcessing {len(contexts)} contexts in {total_chunks} chunk(s) of {args.contexts_per_run}..."
+            f"\nProcessing {len(contexts)} contexts in {total_chunks} chunk(s) of {config.contexts_per_run}..."
         )
 
-    for idx, chunk in enumerate(chunked(contexts, args.contexts_per_run), start=1):
-        if args.verbose:
+    for idx, chunk in enumerate(chunked(contexts, config.contexts_per_run), start=1):
+        if config.verbose:
             print(f"\n{'='*60}")
             print(f"Chunk {idx}/{total_chunks}: Processing {len(chunk)} contexts")
             print(f"{'='*60}")
 
         # Optionally run stage-1 filter
         filtered_chunk = chunk
-        if args.two_stage:
-            if args.verbose:
+        if config.two_stage:
+            if config.verbose:
                 print("  Stage 1: filtering contexts before card generation...")
 
-            filter_prompt = build_codex_filter_prompt(chunk, args)
+            filter_prompt = build_codex_filter_prompt(chunk, config)
 
-            if args.dry_run:
+            if config.dry_run:
                 # Save stage-1 prompt and a generic stage-2 prompt template
                 prompt_stage1_path = run_dir / f"prompt_stage1_chunk_{idx:02d}.txt"
                 prompt_stage1_path.write_text(filter_prompt)
                 prompt_stage2_path = run_dir / f"prompt_chunk_{idx:02d}.txt"
-                stage2_preview = build_codex_prompt(cards_for_prompt, chunk, args)
+                stage2_preview = build_codex_prompt(cards_for_prompt, chunk, config)
                 prompt_stage2_path.write_text(stage2_preview)
-                if args.verbose:
+                if config.verbose:
                     print(
                         f"[dry-run] Saved stage-1 prompt for chunk {idx} at {prompt_stage1_path}"
                     )
@@ -588,18 +589,18 @@ def run_codex_pipeline(
                 continue
 
             try:
-                stage1_reasoning = args.model_reasoning_effort or "low"
+                stage1_reasoning = config.model_reasoning_effort or "low"
                 response_text_stage1 = run_codex_exec(
                     filter_prompt,
                     idx,
                     run_dir,
-                    args,
-                    model_override=args.codex_model_stage1,
+                    config,
+                    model_override=config.codex_model_stage1,
                     reasoning_override=stage1_reasoning,
                     label="_stage1",
                 )
 
-                if args.verbose:
+                if config.verbose:
                     print(
                         f"✓ Received response from stage-1 codex (chunk {idx})"
                     )
@@ -636,7 +637,7 @@ def run_codex_pipeline(
                     chunk_stats["stage1_total"] += len(chunk)
                     chunk_stats["stage1_kept"] += len(kept)
 
-                    if args.verbose:
+                    if config.verbose:
                         print(
                             f"  Stage-1 kept {len(kept)}/{len(chunk)} contexts for stage 2."
                         )
@@ -657,44 +658,44 @@ def run_codex_pipeline(
 
         # Stage 2: card generation
         if not filtered_chunk:
-            if args.verbose:
+            if config.verbose:
                 print(
                     f"  No contexts to send to stage 2 after filtering for chunk {idx}."
                 )
             continue
 
         try:
-            prompt = build_codex_prompt(cards_for_prompt, filtered_chunk, args)
+            prompt = build_codex_prompt(cards_for_prompt, filtered_chunk, config)
 
-            if args.dry_run:
+            if config.dry_run:
                 prompt_path = run_dir / f"prompt_chunk_{idx:02d}.txt"
                 prompt_path.write_text(prompt)
-                if args.verbose:
+                if config.verbose:
                     print(
                         f"[dry-run] Saved stage-2 prompt for chunk {idx} at {prompt_path}"
                     )
                 continue
 
             stage2_reasoning = (
-                args.model_reasoning_effort or ("high" if args.two_stage else "medium")
+                config.model_reasoning_effort or ("high" if config.two_stage else "medium")
             )
             response_text = run_codex_exec(
                 prompt,
                 idx,
                 run_dir,
-                args,
-                model_override=args.codex_model_stage2 or args.codex_model,
+                config,
+                model_override=config.codex_model_stage2 or config.codex_model,
                 reasoning_override=stage2_reasoning,
                 label="",
             )
 
-            if args.verbose:
+            if config.verbose:
                 print(f"✓ Received response from stage-2 codex (chunk {idx})")
                 print(f"  Parsing JSON response...")
 
             # Use robust multi-strategy parser
             response_json = parse_codex_response_robust(
-                response_text, idx, run_dir, args.verbose, label=""
+                response_text, idx, run_dir, config.verbose, label=""
             )
 
             if response_json is None:
@@ -721,7 +722,7 @@ def run_codex_pipeline(
 
             skipped_in_chunk = len(response_json.get("skipped", []))
 
-            if args.verbose:
+            if config.verbose:
                 print(f"✓ Chunk {idx} complete:")
                 print(f"    {cards_in_chunk} cards proposed")
                 print(f"    {skipped_in_chunk} contexts skipped")
@@ -743,25 +744,25 @@ def run_codex_pipeline(
             print(f"   Continuing with remaining chunks...")
             continue
 
-    if args.dry_run:
+    if config.dry_run:
         print(f"[dry-run] Contexts + prompts saved to {run_dir}. No state updates.")
         return
 
     # Generate output files
-    if args.verbose:
+    if config.verbose:
         print(f"\n{'='*60}")
         print("Generating output files...")
         print(f"{'='*60}")
 
     json_path = run_dir / "all_proposed_cards.json"
     json_path.write_text(json.dumps(all_proposed_cards, indent=2))
-    if args.verbose:
+    if config.verbose:
         print(f"✓ JSON cards saved to: {json_path}")
     else:
         print(f"JSON cards saved to: {json_path}")
 
     # Update state
-    if args.verbose:
+    if config.verbose:
         print(f"\nUpdating state file...")
     state_tracker.add_context_ids(new_seen_ids)
     for file_path in processed_files:
@@ -778,7 +779,7 @@ def run_codex_pipeline(
     state_tracker.record_run(run_dir, len(new_seen_ids))
     state_tracker.save()
 
-    if args.verbose:
+    if config.verbose:
         print(f"✓ State updated")
         print(f"\n{'='*60}")
         print("SUMMARY")
@@ -811,7 +812,7 @@ def run_codex_pipeline(
 
 def build_conversation_prompt(
     conversations: List[Conversation],
-    args: Any,
+    config: LLMPipelineConfig,
 ) -> str:
     """Build the conversation-level card generation prompt.
 
@@ -890,8 +891,8 @@ def build_conversation_prompt(
         ],
     }
 
-    # Get available decks from args (set in main() from config or CLI)
-    available_decks = getattr(args, "decks", None) or []
+    # Get available decks from typed config (set in main() from config or CLI)
+    available_decks = config.decks or []
 
     payload = {
         "available_decks": available_decks,
@@ -1074,7 +1075,7 @@ def build_conversation_prompt(
 
 def build_conversation_filter_prompt(
     conversations: List[Conversation],
-    args: Any,
+    config: LLMPipelineConfig,
 ) -> str:
     """Build the stage-1 filter prompt for conversations.
 

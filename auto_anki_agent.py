@@ -48,6 +48,7 @@ from auto_anki.codex import (
     parse_codex_response_robust,
     run_codex_exec,
 )
+from auto_anki.config_types import LLMPipelineConfig
 from auto_anki.dedup import enrich_cards_with_duplicate_flags, prune_contexts, prune_conversations
 from auto_anki.llm_backends import list_backends
 from auto_anki.state import StateTracker, ensure_run_dir
@@ -406,18 +407,18 @@ def ensure_run_dir(base_dir: Path) -> Path:
 
 
 def _process_stage2_batch(
-    batch_info: Tuple[int, List[Conversation], Path, Any],
+    batch_info: Tuple[int, List[Conversation], Path, LLMPipelineConfig],
 ) -> Dict[str, Any]:
     """Process a single Stage 2 batch. Used for parallel execution.
 
     Args:
-        batch_info: Tuple of (batch_idx, filtered_conversations, run_dir, args)
+        batch_info: Tuple of (batch_idx, filtered_conversations, run_dir, config)
 
     Returns:
         Dict with keys: success, batch_idx, cards, skipped_conversations, skipped_turns,
                        conversation_ids, source_paths, error
     """
-    batch_idx, filtered_chunk, run_dir, args = batch_info
+    batch_idx, filtered_chunk, run_dir, config = batch_info
 
     result: Dict[str, Any] = {
         "success": False,
@@ -431,24 +432,28 @@ def _process_stage2_batch(
     }
 
     try:
-        prompt = build_conversation_prompt(filtered_chunk, args)
+        prompt = build_conversation_prompt(filtered_chunk, config)
 
         # Use resolved stage2 settings
-        stage2_model = getattr(args, "llm_model_stage2", None) or (args.codex_model_stage2 if args.two_stage else None)
-        stage2_reasoning = getattr(args, "model_reasoning_effort_stage2", None) or args.model_reasoning_effort or ("high" if args.two_stage else "medium")
+        stage2_model = config.llm_model_stage2 or (config.codex_model_stage2 if config.two_stage else None)
+        stage2_reasoning = (
+            config.model_reasoning_effort_stage2
+            or config.model_reasoning_effort
+            or ("high" if config.two_stage else "medium")
+        )
 
         response_text = run_codex_exec(
             prompt,
             batch_idx,
             run_dir,
-            args,
+            config,
             model_override=stage2_model,
             reasoning_override=stage2_reasoning,
             label="",
         )
 
         response_json = parse_codex_response_robust(
-            response_text, batch_idx, run_dir, args.verbose, label=""
+            response_text, batch_idx, run_dir, config.verbose, label=""
         )
 
         if response_json is None:
@@ -586,6 +591,9 @@ def main() -> None:
             SCRIPT_DIR / ".deck_cache",
         )
     )
+    # Persist resolved paths on args for downstream consumers
+    args.cache_dir = cache_dir
+    args.output_dir = output_dir
 
     chat_root_str = args.chat_root
     if not args.chat_root and config.get("chat_root"):
@@ -593,6 +601,8 @@ def main() -> None:
     chat_root = Path(chat_root_str).expanduser()
     if not chat_root.exists():
         raise SystemExit(f"Chat root {chat_root} does not exist.")
+
+    pipeline_config = LLMPipelineConfig.from_namespace(args)
 
     # Initialize state tracker and filters
     state_tracker = StateTracker(state_path)
@@ -642,7 +652,7 @@ def main() -> None:
         print(f"Harvested {len(conversations)} conversations ({total_turns} total turns) before pruning.")
 
     # Prune conversations against existing cards
-    conversations, skipped_duplicate_ids = prune_conversations(conversations, cards, args)
+    conversations, skipped_duplicate_ids = prune_conversations(conversations, cards, pipeline_config)
     if args.verbose:
         total_turns = sum(len(c.turns) for c in conversations)
         print(f"{len(conversations)} conversations ({total_turns} turns) remain after dedup.")
@@ -697,9 +707,9 @@ def main() -> None:
     }
 
     # Batch conversations (using contexts_per_run as conversations per batch)
-    conversations_per_batch = args.contexts_per_run
+    conversations_per_batch = pipeline_config.contexts_per_run
     total_chunks = (len(conversations) + conversations_per_batch - 1) // conversations_per_batch
-    if args.verbose:
+    if pipeline_config.verbose:
         print(f"\nProcessing {len(conversations)} conversations in {total_chunks} batch(es)...")
 
     # ========================================================================
@@ -708,7 +718,7 @@ def main() -> None:
     stage2_batches: List[Tuple[int, List[Conversation]]] = []
 
     for idx, chunk in enumerate(chunked(conversations, conversations_per_batch), start=1):
-        if args.verbose:
+        if pipeline_config.verbose:
             chunk_turns = sum(len(c.turns) for c in chunk)
             print(f"\n{'='*60}")
             print(f"Batch {idx}/{total_chunks}: {len(chunk)} conversations ({chunk_turns} turns)")
@@ -716,42 +726,46 @@ def main() -> None:
 
         # Optionally run stage-1 filter (conversation-level)
         filtered_chunk = chunk
-        if args.two_stage:
-            if args.verbose:
+        if pipeline_config.two_stage:
+            if pipeline_config.verbose:
                 print("  Stage 1: filtering conversations before card generation...")
 
-            filter_prompt = build_conversation_filter_prompt(chunk, args)
+            filter_prompt = build_conversation_filter_prompt(chunk, pipeline_config)
 
-            if args.dry_run:
+            if pipeline_config.dry_run:
                 prompt_stage1_path = run_dir / f"prompt_stage1_batch_{idx:02d}.txt"
                 prompt_stage1_path.write_text(filter_prompt)
                 prompt_stage2_path = run_dir / f"prompt_batch_{idx:02d}.txt"
-                stage2_preview = build_conversation_prompt(chunk, args)
+                stage2_preview = build_conversation_prompt(chunk, pipeline_config)
                 prompt_stage2_path.write_text(stage2_preview)
-                if args.verbose:
+                if pipeline_config.verbose:
                     print(f"[dry-run] Saved stage-1 prompt at {prompt_stage1_path}")
                     print(f"[dry-run] Saved stage-2 preview prompt at {prompt_stage2_path}")
                 continue
 
             try:
                 # Use resolved stage1 settings
-                stage1_model = getattr(args, "llm_model_stage1", None) or args.codex_model_stage1
-                stage1_reasoning = getattr(args, "model_reasoning_effort_stage1", None) or args.model_reasoning_effort or "low"
+                stage1_model = pipeline_config.llm_model_stage1 or pipeline_config.codex_model_stage1
+                stage1_reasoning = (
+                    pipeline_config.model_reasoning_effort_stage1
+                    or pipeline_config.model_reasoning_effort
+                    or "low"
+                )
                 response_text_stage1 = run_codex_exec(
                     filter_prompt,
                     idx,
                     run_dir,
-                    args,
+                    pipeline_config,
                     model_override=stage1_model,
                     reasoning_override=stage1_reasoning,
                     label="_stage1",
                 )
 
-                if args.verbose:
+                if pipeline_config.verbose:
                     print(f"✓ Received stage-1 response (batch {idx})")
 
                 response_json_stage1 = parse_codex_response_robust(
-                    response_text_stage1, idx, run_dir, args.verbose, label="_stage1"
+                    response_text_stage1, idx, run_dir, pipeline_config.verbose, label="_stage1"
                 )
 
                 if response_json_stage1 is None:
@@ -776,7 +790,7 @@ def main() -> None:
                     kept_count = len(kept_conv_ids)
                     chunk_stats["stage1_kept"] += kept_count
                     chunk_stats["stage1_total"] += len(chunk)
-                    if args.verbose:
+                    if pipeline_config.verbose:
                         print(f"  Stage-1 kept {kept_count}/{len(chunk)} conversations.")
 
                 if kept_conv_ids:
@@ -785,7 +799,7 @@ def main() -> None:
                     filtered_chunk = chunk
 
                 if not filtered_chunk:
-                    if args.verbose:
+                    if pipeline_config.verbose:
                         print(f"  Stage-1 filtered all conversations in batch {idx}.")
                     for conv in chunk:
                         new_conversation_ids.append(conv.conversation_id)
@@ -800,11 +814,11 @@ def main() -> None:
                 filtered_chunk = chunk
 
         # Handle dry-run for non-two-stage mode
-        if args.dry_run and not args.two_stage:
+        if pipeline_config.dry_run and not pipeline_config.two_stage:
             prompt_path = run_dir / f"prompt_batch_{idx:02d}.txt"
-            prompt = build_conversation_prompt(filtered_chunk, args)
+            prompt = build_conversation_prompt(filtered_chunk, pipeline_config)
             prompt_path.write_text(prompt)
-            if args.verbose:
+            if pipeline_config.verbose:
                 print(f"[dry-run] Saved prompt at {prompt_path}")
             continue
 
@@ -815,15 +829,15 @@ def main() -> None:
     # ========================================================================
     # PHASE 2: Stage 2 card generation (parallel - this is the bottleneck)
     # ========================================================================
-    if stage2_batches and not args.dry_run:
-        if args.verbose:
+    if stage2_batches and not pipeline_config.dry_run:
+        if pipeline_config.verbose:
             print(f"\n{'='*60}")
             print(f"Stage 2: Generating cards for {len(stage2_batches)} batch(es) in parallel...")
             print(f"{'='*60}")
 
         # Prepare batch info for parallel processing
         batch_infos = [
-            (idx, filtered_chunk, run_dir, args)
+            (idx, filtered_chunk, run_dir, pipeline_config)
             for idx, filtered_chunk in stage2_batches
         ]
 
@@ -846,7 +860,7 @@ def main() -> None:
                         all_proposed_cards.extend(result["cards"])
                         chunk_stats["total_cards"] += cards_in_batch
 
-                        if args.verbose:
+                        if pipeline_config.verbose:
                             print(f"✓ Batch {result['batch_idx']} complete:")
                             print(f"    {cards_in_batch} cards proposed")
                             print(f"    {result['skipped_conversations']} conversations skipped, {result['skipped_turns']} turns skipped")
