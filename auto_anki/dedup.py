@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from auto_anki.cards import Card, normalize_text
+from auto_anki.config_types import LLMPipelineConfig
 from auto_anki.contexts import ChatTurn, Conversation
 
 
@@ -407,28 +408,28 @@ def is_duplicate_context(
 
 
 def prune_contexts(
-    contexts: List[ChatTurn], cards: List[Card], args: Any
+    contexts: List[ChatTurn], cards: List[Card], config: LLMPipelineConfig
 ) -> List[ChatTurn]:
     """Filter contexts to remove duplicates against existing cards."""
     pruned: List[ChatTurn] = []
     total = len(contexts)
 
     semantic_index: Optional[SemanticCardIndex] = None
-    if args.dedup_method in ("semantic", "hybrid"):
+    if config.dedup_method in ("semantic", "hybrid"):
         try:
             from sentence_transformers import SentenceTransformer  # type: ignore
             import numpy as _np  # type: ignore
 
-            if getattr(args, "verbose", False):
+            if config.verbose:
                 print("Building semantic index over existing cards for deduplication...")
 
             semantic_index = SemanticCardIndex(
                 cards=cards,
                 sentence_transformer_cls=SentenceTransformer,
                 np_module=_np,
-                model_name=args.semantic_model,
-                verbose=args.verbose,
-                cache_dir=args.cache_dir,
+                model_name=config.semantic_model,
+                verbose=config.verbose,
+                cache_dir=config.cache_dir,
             )
         except ImportError:
             # Fall back to string-based deduplication
@@ -444,20 +445,20 @@ def prune_contexts(
     for idx, context in enumerate(
         sorted(contexts, key=lambda c: c.score, reverse=True), 1
     ):
-        if getattr(args, "verbose", False):
+        if config.verbose:
             print(f"  Checking context {idx}/{total} for duplicates...", end="\r")
 
         is_dup = False
 
         # String-based deduplication (current default behaviour)
-        if args.dedup_method in ("string", "hybrid"):
-            if is_duplicate_context(context, cards, args.similarity_threshold):
+        if config.dedup_method in ("string", "hybrid"):
+            if is_duplicate_context(context, cards, config.similarity_threshold):
                 is_dup = True
 
         # Semantic deduplication using embeddings
         if not is_dup and semantic_index is not None:
             if semantic_index.is_duplicate(
-                context, args.semantic_similarity_threshold
+                context, config.semantic_similarity_threshold
             ):
                 is_dup = True
 
@@ -465,7 +466,7 @@ def prune_contexts(
             continue
         pruned.append(context)
 
-    if getattr(args, "verbose", False):
+    if config.verbose:
         print(f"  Checked {total} contexts for duplicates - done!     ")
 
     return pruned
@@ -509,7 +510,7 @@ def is_conversation_duplicate(
 def prune_conversations(
     conversations: List[Conversation],
     cards: List[Card],
-    args: Any,
+    config: LLMPipelineConfig,
 ) -> Tuple[List[Conversation], List[str]]:
     """Filter conversations, marking turns that are already covered by existing cards.
 
@@ -521,7 +522,7 @@ def prune_conversations(
     Args:
         conversations: List of Conversation objects to filter
         cards: Existing cards to check against
-        args: CLI arguments namespace
+        config: Typed configuration for deduplication/LLM pipeline
 
     Returns:
         Tuple of:
@@ -534,37 +535,37 @@ def prune_conversations(
 
     # Build semantic index if needed
     semantic_index: Optional[SemanticCardIndex] = None
-    dedup_method = getattr(args, "dedup_method", "hybrid")
+    dedup_method = config.dedup_method
 
     if dedup_method in ("semantic", "hybrid"):
         try:
             from sentence_transformers import SentenceTransformer  # type: ignore
             import numpy as _np  # type: ignore
 
-            if getattr(args, "verbose", False):
+            if config.verbose:
                 print("Building semantic index for conversation deduplication...")
 
             semantic_index = SemanticCardIndex(
                 cards=cards,
                 sentence_transformer_cls=SentenceTransformer,
                 np_module=_np,
-                model_name=getattr(args, "semantic_model", "all-MiniLM-L6-v2"),
-                verbose=getattr(args, "verbose", False),
-                cache_dir=getattr(args, "cache_dir", None),
+                model_name=config.semantic_model,
+                verbose=config.verbose,
+                cache_dir=config.cache_dir,
             )
         except ImportError:
-            if getattr(args, "verbose", False):
+            if config.verbose:
                 print(
                     "⚠ Semantic dedup dependencies not found. Using string-based only."
                 )
 
-    string_threshold = getattr(args, "similarity_threshold", 0.82)
-    semantic_threshold = getattr(args, "semantic_similarity_threshold", 0.85)
+    string_threshold = config.similarity_threshold
+    semantic_threshold = config.semantic_similarity_threshold
 
     for idx, conv in enumerate(
         sorted(conversations, key=lambda c: c.aggregate_score, reverse=True), 1
     ):
-        if getattr(args, "verbose", False):
+        if config.verbose:
             print(
                 f"  Checking conversation {idx}/{total} ({len(conv.turns)} turns)...",
                 end="\r",
@@ -580,7 +581,7 @@ def prune_conversations(
 
         # Skip entire conversation only if ALL turns are duplicates
         if all_dup:
-            if getattr(args, "verbose", False):
+            if config.verbose:
                 print(
                     f"  Skipping conversation {idx}: all {len(conv.turns)} turns are duplicates"
                 )
@@ -596,7 +597,7 @@ def prune_conversations(
 
         pruned.append(conv)
 
-    if getattr(args, "verbose", False):
+    if config.verbose:
         dup_count = total - len(pruned)
         print(
             f"  Checked {total} conversations - {dup_count} fully duplicate, {len(pruned)} kept"
