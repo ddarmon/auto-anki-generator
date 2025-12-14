@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -84,6 +85,8 @@ ENTRY_RE = re.compile(
 )
 
 ASSISTANT_START_PLACEHOLDER = "Assistant started conversation (no user prompt in export)"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -850,7 +853,8 @@ def harvest_conversations(
     for path in files:
         try:
             text = path.read_text()
-        except Exception:
+        except Exception as e:
+            logger.warning("Skipping conversation file %s due to read error: %s", path, e)
             continue
 
         if "\n---" in text:

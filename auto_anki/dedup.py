@@ -11,6 +11,7 @@ This module owns:
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -20,6 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from auto_anki.cards import Card, normalize_text
 from auto_anki.config_types import LLMPipelineConfig
 from auto_anki.contexts import ChatTurn, Conversation
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -202,6 +205,7 @@ class SemanticCardIndex:
         except Exception as e:  # pragma: no cover - best-effort cache
             if self.verbose:
                 print(f"  Warning: Failed to save cache: {e}")
+            logger.warning("Failed to save semantic cache to %s: %s", self.cache_path, e)
 
     def _get_note_ids(self, cards: List[Card]) -> List[int]:
         """Get sorted list of note IDs for cache invalidation."""

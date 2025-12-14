@@ -10,6 +10,7 @@ This module owns:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sys
 import time
@@ -20,6 +21,8 @@ from typing import List, Optional, Dict, Any
 # Import AnkiConnect client
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from anki_connect import AnkiConnectClient, AnkiConnectError
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_text(value: str) -> str:
@@ -221,8 +224,9 @@ def _save_to_cache(cache_path: Path, cards: List[Card], deck_names: List[str]) -
             ],
         }
         cache_path.write_text(json.dumps(cache_data, indent=2))
-    except Exception:
-        pass  # Best-effort caching
+    except Exception as e:
+        # Best-effort caching; warn so repeated cache misses are visible
+        logger.warning("Failed to write Anki card cache to %s: %s", cache_path, e)
 
 
 __all__ = ["Card", "normalize_text", "load_cards_from_anki"]
