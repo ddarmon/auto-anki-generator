@@ -158,6 +158,7 @@ Supported keys mirror the CLI options:
 - `state_file`
 - `output_dir`
 - `cache_dir`
+- `exclude_patterns` - List of glob patterns to exclude files (e.g., `["*_chat-*.md"]`)
 - `llm_backend` - Which LLM CLI to use (`codex` or `claude-code`)
 - `llm_config` - Per-backend model and reasoning configuration
 
@@ -174,6 +175,7 @@ Example `auto_anki_config.json`:
   "state_file": ".auto_anki_agent_state.json",
   "output_dir": "auto_anki_runs",
   "cache_dir": ".deck_cache",
+  "exclude_patterns": ["*_chat-*.md"],
 
   "llm_backend": "codex",
   "llm_config": {
