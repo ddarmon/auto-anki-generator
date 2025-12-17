@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -121,14 +122,22 @@ def format_week_label(week_start: date) -> str:
 # ---------------------------------------------------------------------------
 
 
-def scan_conversations(chat_root: Path) -> Dict[Path, date]:
+def scan_conversations(
+    chat_root: Path,
+    exclude_patterns: Optional[List[str]] = None,
+) -> Dict[Path, date]:
     """
     Scan chat_root for all conversation files, extracting dates.
+
+    Args:
+        chat_root: Root directory to scan
+        exclude_patterns: Optional list of glob patterns to exclude (e.g., ["*_chat-*.md"])
 
     Returns:
         Dict mapping file path -> conversation date
     """
     conversations: Dict[Path, date] = {}
+    exclude_patterns = exclude_patterns or []
 
     if not chat_root.exists():
         return conversations
@@ -136,6 +145,10 @@ def scan_conversations(chat_root: Path) -> Dict[Path, date]:
     for md_file in chat_root.rglob("*.md"):
         # Skip hidden files and directories
         if any(part.startswith(".") for part in md_file.parts):
+            continue
+
+        # Skip files matching exclusion patterns
+        if any(fnmatch.fnmatch(md_file.name, p) for p in exclude_patterns):
             continue
 
         file_date = extract_date_from_path(md_file)
@@ -607,8 +620,11 @@ Examples:
     # Load state
     state = StateTracker(state_path)
 
+    # Get exclusion patterns from config
+    exclude_patterns = config.get("exclude_patterns", [])
+
     # Scan conversations and compute stats
-    all_conversations = scan_conversations(chat_root)
+    all_conversations = scan_conversations(chat_root, exclude_patterns)
     processed_files = get_processed_files_with_dates(state)
     cards_by_week = get_run_history_by_week(state)
 

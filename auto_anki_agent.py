@@ -269,6 +269,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Build contexts/prompts but skip calling codex exec.",
     )
+    parser.add_argument(
+        "--exclude-patterns",
+        nargs="*",
+        default=None,
+        help="File glob patterns to exclude (e.g., '*_chat-*.md'). Can also be set in config.",
+    )
     # LLM Backend configuration
     parser.add_argument(
         "--llm-backend",
@@ -594,6 +600,10 @@ def main() -> None:
     # Persist resolved paths on args for downstream consumers
     args.cache_dir = cache_dir
     args.output_dir = output_dir
+
+    # Merge exclude_patterns from config if not set via CLI
+    if args.exclude_patterns is None:
+        args.exclude_patterns = config.get("exclude_patterns", [])
 
     chat_root_str = args.chat_root
     if not args.chat_root and config.get("chat_root"):

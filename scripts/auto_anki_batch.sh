@@ -2,16 +2,18 @@
 #
 # auto_anki_batch.sh - Automated batch processing with usage-based throttling
 #
-# Runs auto-anki in a loop, working backwards through months from most recent.
-# Monitors codex usage and waits when usage exceeds sustainable pace.
+# Discovers months with unprocessed files and processes only those months.
+# Monitors LLM usage and waits when usage exceeds sustainable pace.
+# Exits when all discovered months have been processed (single-pass mode).
 #
 # Usage:
-#   ./scripts/auto_anki_batch.sh
+#   ./scripts/auto_anki_batch.sh                   # process unprocessed files
+#   BACKFILL_MODE=1 ./scripts/auto_anki_batch.sh   # reprocess zero-card files
 #   PREVENT_SLEEP=0 ./scripts/auto_anki_batch.sh   # don't inhibit sleep (macOS)
 #   Press Ctrl+C to stop gracefully
 #
 # Requirements:
-#   - Codex CLI logged in (~/.codex/auth.json must exist)
+#   - LLM backend configured (Codex or Claude Code)
 #   - Anki running with AnkiConnect plugin
 #   - uv installed and auto-anki project set up
 #
@@ -52,13 +54,6 @@ BACKFILL_MODE=${BACKFILL_MODE:-0}
 # Retry settings
 MAX_RETRIES=3
 RETRY_DELAY=60          # seconds between retries
-
-# Month range (will process from START backwards to END)
-# Defaults to current month; adjust END values based on your data
-START_YEAR=$(date +%Y)
-START_MONTH=$(date +%-m)  # Current month without leading zero
-END_YEAR=2022
-END_MONTH=1
 
 # Logging
 LOG_DIR="$PROJECT_DIR/auto_anki_runs"
@@ -279,29 +274,69 @@ wait_for_pace() {
     done
 }
 
-# Generate list of months from current backwards
-generate_months() {
-    MONTHS=()
-    local year month
+# Discover months that have unprocessed files (or zero-card files in backfill mode)
+# Output: one line per month with work: "YYYY-MM count" (newest first)
+# Returns empty output if nothing to process
+discover_months_with_work() {
+    cd "$PROJECT_DIR" || return 1
 
-    for ((year=START_YEAR; year>=END_YEAR; year--)); do
-        local max_month=12
-        local min_month=1
+    local backfill_flag="$1"
 
-        # Limit to current month for start year
-        if [[ $year -eq $START_YEAR ]]; then
-            max_month=$START_MONTH
-        fi
+    uv run python -c "
+from pathlib import Path
+from auto_anki.state import StateTracker
+from collections import defaultdict
+import json
+import re
 
-        # Limit to end month for end year
-        if [[ $year -eq $END_YEAR ]]; then
-            min_month=$END_MONTH
-        fi
+# Read chat_root from config
+config_path = Path('auto_anki_config.json')
+if config_path.exists():
+    config = json.loads(config_path.read_text())
+    chat_root = Path(config.get('chat_root', '')).expanduser()
+else:
+    print('Error: auto_anki_config.json not found', file=__import__('sys').stderr)
+    exit(1)
 
-        for ((month=max_month; month>=min_month; month--)); do
-            MONTHS+=("$(printf '%d-%02d' "$year" "$month")")
-        done
-    done
+if not chat_root.exists():
+    print(f'Error: chat_root does not exist: {chat_root}', file=__import__('sys').stderr)
+    exit(1)
+
+state_path = Path('.auto_anki_agent_state.json')
+state = StateTracker(state_path) if state_path.exists() else None
+backfill_mode = '$backfill_flag' == '1'
+
+# Get exclusion patterns from config
+import fnmatch
+exclude_patterns = config.get('exclude_patterns', [])
+
+# Group files by month
+months_with_work = defaultdict(int)
+date_pattern = re.compile(r'(\d{4}-\d{2})-\d{2}')
+
+for f in chat_root.rglob('*.md'):
+    # Skip excluded patterns
+    if any(fnmatch.fnmatch(f.name, p) for p in exclude_patterns):
+        continue
+
+    match = date_pattern.search(f.name)
+    if not match:
+        continue
+    month = match.group(1)  # YYYY-MM
+
+    if backfill_mode:
+        # In backfill mode, count files that generated 0 cards
+        if state and state.is_file_zero_card(f):
+            months_with_work[month] += 1
+    else:
+        # Normal mode: count unprocessed files
+        if state is None or not state.is_file_processed(f):
+            months_with_work[month] += 1
+
+# Sort newest first and print
+for month in sorted(months_with_work.keys(), reverse=True):
+    print(f'{month} {months_with_work[month]}')
+"
 }
 
 # Run auto-anki for a specific month with retry logic
@@ -403,19 +438,46 @@ main() {
 
     start_sleep_inhibitor
 
-    # Generate list of months
-    generate_months
+    # Discover months that have unprocessed files
+    log_message "INFO" "Discovering months with unprocessed files..."
+
+    local discovery_output
+    discovery_output=$(discover_months_with_work "$BACKFILL_MODE")
+
+    if [[ -z "$discovery_output" ]]; then
+        log_message "INFO" "No unprocessed files found. Nothing to do."
+        show_progress
+        stop_sleep_inhibitor || true
+        exit 0
+    fi
+
+    # Parse discovery output into MONTHS array
+    MONTHS=()
+    local total_files=0
+    while read -r line; do
+        # Split line into month and count (format: "YYYY-MM count")
+        local month count
+        month="${line%% *}"
+        count="${line##* }"
+        MONTHS+=("$month")
+        # Use 10# prefix to force decimal interpretation (avoid octal issues)
+        total_files=$((total_files + 10#$count))
+    done <<< "$discovery_output"
+
     local total_months=${#MONTHS[@]}
 
-    local last_index=$((total_months - 1))
-    log_message "INFO" "Processing $total_months months from ${MONTHS[0]} to ${MONTHS[$last_index]}"
+    log_message "INFO" "Found $total_files unprocessed files across $total_months months"
+    log_message "INFO" "Months to process: ${MONTHS[*]}"
 
     # Main processing loop
     while true; do
         # Check if we've processed all months
         if [[ $month_index -ge $total_months ]]; then
-            log_message "INFO" "All months processed! Restarting from ${MONTHS[0]}..."
-            month_index=0
+            log_message "INFO" "All months processed! Exiting."
+            log_message "INFO" "Run 'uv run auto-anki-progress' to see final status"
+            show_progress
+            stop_sleep_inhibitor || true
+            exit 0
         fi
 
         current_month="${MONTHS[$month_index]}"
