@@ -2,12 +2,19 @@
 """
 Reconcile state file inconsistencies.
 
+NOTE: As of PR #6, Stage 1 rejections and dedup skips now automatically mark
+files as processed with appropriate status. The default reconciliation mode
+is primarily useful for one-time cleanup of HISTORICAL data from before that
+fix was deployed.
+
 Modes:
 1. Default: Find files with conversation_id in seen_conversations but NOT in
-   processed_files, and add them to processed_files with cards_generated=0.
+   processed_files, and add them to processed_files with status="reconciled".
+   This is mainly for cleaning up historical inconsistencies.
 
 2. --mark-stubs: Find stub files (no valid user+assistant turns) that are NOT
-   in processed_files, and mark them as processed since they'll never generate cards.
+   in processed_files, and mark them as processed since they'll never generate
+   cards. This mode remains useful for stub files that appear from imports.
 
 Usage:
     python scripts/reconcile_state.py --dry-run              # Show what would be changed
@@ -172,13 +179,13 @@ def main():
                 processed_files[file_path] = {
                     "processed_at": timestamp,
                     "cards_generated": 0,
-                    "stub_file": True,  # Mark as stub for audit
+                    "status": "stub_file",
                 }
             else:
                 processed_files[file_path] = {
                     "processed_at": timestamp,
                     "cards_generated": 0,
-                    "reconciled": True,  # Mark as reconciled for audit
+                    "status": "reconciled",
                 }
 
         state["processed_files"] = processed_files
