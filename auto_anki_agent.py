@@ -41,7 +41,7 @@ from auto_anki.contexts import (
     harvest_chat_contexts,
     harvest_conversations,
 )
-from auto_anki.codex import (
+from auto_anki.llm import (
     build_conversation_prompt,
     build_conversation_filter_prompt,
     chunked,
