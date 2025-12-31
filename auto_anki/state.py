@@ -268,14 +268,26 @@ class StateTracker:
         ]
 
     def mark_file_processed(
-        self, file_path: Path, cards_generated: int = 0
+        self, file_path: Path, cards_generated: int = 0, status: str = "generated"
     ) -> None:
-        """Mark a file as processed."""
+        """Mark a file as processed.
+
+        Args:
+            file_path: Path to the processed file.
+            cards_generated: Number of cards generated from this file.
+            status: Processing status - one of:
+                - "generated": Normal processing with cards
+                - "stage1_rejected": All conversations rejected by Stage 1 filter
+                - "dedup_skipped": All conversations were duplicates
+                - "stub_file": No valid turns (from reconciliation)
+                - "reconciled": Backfilled from seen_conversations
+        """
         if "processed_files" not in self.data:
             self.data["processed_files"] = {}
         self.data["processed_files"][str(file_path)] = {
             "processed_at": datetime.now().isoformat(),
             "cards_generated": cards_generated,
+            "status": status,
         }
 
     def get_seen_context_ids(self) -> set[str]:

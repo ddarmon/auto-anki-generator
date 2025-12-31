@@ -169,6 +169,21 @@ class DateRangeFilter:
         return True
 
 
+def matches_exclusion_pattern(path: Path, patterns: List[str]) -> bool:
+    """Check if file matches any exclusion pattern (glob-style).
+
+    Args:
+        path: Path to the file
+        patterns: List of glob patterns (e.g., ['*_chat-*.md', 'draft-*'])
+
+    Returns:
+        True if the file matches any pattern and should be excluded
+    """
+    import fnmatch
+
+    return any(fnmatch.fnmatch(path.name, pattern) for pattern in patterns)
+
+
 def parse_chat_metadata(header_block: str) -> Dict[str, str]:
     metadata: Dict[str, str] = {}
     title_match = re.search(r"^#\s+(?P<title>.+)$", header_block, re.MULTILINE)
@@ -820,6 +835,11 @@ def harvest_conversations(
     if date_filter:
         files = [f for f in files if date_filter.matches(f)]
 
+    # Apply exclusion patterns
+    exclude_patterns = getattr(args, "exclude_patterns", None) or []
+    if exclude_patterns:
+        files = [f for f in files if not matches_exclusion_pattern(f, exclude_patterns)]
+
     # Handle three file selection modes:
     # 1. --only-zero-card-files: ONLY files that generated 0 cards
     # 2. --unprocessed-only --reprocess-zero-card-files: unprocessed OR zero-card
@@ -910,6 +930,7 @@ __all__ = [
     "ChatTurn",
     "Conversation",
     "DateRangeFilter",
+    "matches_exclusion_pattern",
     "harvest_chat_contexts",
     "harvest_conversations",
     "detect_signals",

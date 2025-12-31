@@ -269,6 +269,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Build contexts/prompts but skip calling codex exec.",
     )
+    parser.add_argument(
+        "--exclude-patterns",
+        nargs="*",
+        default=None,
+        help="File glob patterns to exclude (e.g., '*_chat-*.md'). Can also be set in config.",
+    )
     # LLM Backend configuration
     parser.add_argument(
         "--llm-backend",
@@ -595,6 +601,10 @@ def main() -> None:
     args.cache_dir = cache_dir
     args.output_dir = output_dir
 
+    # Merge exclude_patterns from config if not set via CLI
+    if args.exclude_patterns is None:
+        args.exclude_patterns = config.get("exclude_patterns", [])
+
     chat_root_str = args.chat_root
     if not args.chat_root and config.get("chat_root"):
         chat_root_str = config["chat_root"]
@@ -651,6 +661,17 @@ def main() -> None:
         total_turns = sum(len(c.turns) for c in conversations)
         print(f"Harvested {len(conversations)} conversations ({total_turns} total turns) before pruning.")
 
+    # Build file → conversation mapping for accurate file-level tracking
+    # This captures the mapping BEFORE pruning so we can detect when all
+    # conversations from a file have been decided (rejected, deduped, or generated)
+    file_to_conversations: dict[Path, list[str]] = defaultdict(list)
+    for conv in conversations:
+        file_to_conversations[Path(conv.source_path)].append(conv.conversation_id)
+    original_file_conversations = dict(file_to_conversations)  # Preserve pre-pruning state
+
+    # Initialize processed_files set early so it's available for dedup/rejection marking
+    processed_files: set[Path] = set()
+
     # Prune conversations against existing cards
     conversations, skipped_duplicate_ids = prune_conversations(conversations, cards, pipeline_config)
     if args.verbose:
@@ -660,6 +681,22 @@ def main() -> None:
     # Track skipped duplicates in state so they aren't re-processed on next run
     if skipped_duplicate_ids:
         state_tracker.add_conversation_ids(skipped_duplicate_ids)
+
+        # Check if any files are now fully decided after dedup
+        # A file is fully decided if ALL its conversations are either:
+        # - skipped as duplicates, OR
+        # - already in seen_conversation_ids
+        all_decided = set(skipped_duplicate_ids) | seen_conversation_ids
+        for file_path, conv_ids in original_file_conversations.items():
+            if all(cid in all_decided for cid in conv_ids):
+                if file_path not in processed_files:
+                    processed_files.add(file_path)
+                    state_tracker.mark_file_processed(
+                        file_path, cards_generated=0, status="dedup_skipped"
+                    )
+                    if args.verbose:
+                        print(f"  Marked {file_path.name} as processed (all conversations were duplicates)")
+
         state_tracker.save()
         if args.verbose:
             print(f"  Marked {len(skipped_duplicate_ids)} duplicate conversations as seen in state.")
@@ -697,7 +734,7 @@ def main() -> None:
     # Process conversation chunks (optionally with two-stage pipeline)
     new_conversation_ids: List[str] = []
     all_proposed_cards: List[Dict[str, Any]] = []
-    processed_files: set[Path] = set()
+    # Note: processed_files is initialized earlier (before dedup) for early file marking
     chunk_stats: Dict[str, Any] = {
         "success": 0,
         "failed": 0,
@@ -787,6 +824,19 @@ def main() -> None:
                     }
                     if rejected_conv_ids:
                         new_conversation_ids.extend(rejected_conv_ids)
+
+                        # Check if any files are now fully decided after Stage 1 rejection
+                        all_decided = set(new_conversation_ids) | seen_conversation_ids
+                        for file_path, conv_ids in original_file_conversations.items():
+                            if all(cid in all_decided for cid in conv_ids):
+                                if file_path not in processed_files:
+                                    processed_files.add(file_path)
+                                    state_tracker.mark_file_processed(
+                                        file_path, cards_generated=0, status="stage1_rejected"
+                                    )
+                                    if pipeline_config.verbose:
+                                        print(f"    Marked {file_path.name} as processed (Stage 1 rejected)")
+
                     kept_count = len(kept_conv_ids)
                     chunk_stats["stage1_kept"] += kept_count
                     chunk_stats["stage1_total"] += len(chunk)
@@ -924,6 +974,9 @@ def main() -> None:
             print(f"\nUpdating state file...")
         state_tracker.add_conversation_ids(new_conversation_ids)
         for file_path in processed_files:
+            # Skip files already marked earlier (e.g., dedup_skipped, stage1_rejected)
+            if state_tracker.is_file_processed(file_path):
+                continue
             file_cards = sum(
                 1 for card in all_proposed_cards
                 if any(

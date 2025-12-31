@@ -483,15 +483,19 @@ def parse_codex_response_robust(
     for strategy_name, strategy in strategies:
         try:
             result = strategy()
-            if verbose:
-                print(f"  ✓ Parsed with strategy: {strategy_name}")
-            # Save the working version
-            (run_dir / f"codex{label}_parsed_response_chunk_{chunk_idx:02d}.json").write_text(
-                json.dumps(result, indent=2)
-            )
             if isinstance(result, dict):
+                if verbose:
+                    print(f"  ✓ Parsed with strategy: {strategy_name}")
+                # Save the working version
+                (run_dir / f"codex{label}_parsed_response_chunk_{chunk_idx:02d}.json").write_text(
+                    json.dumps(result, indent=2)
+                )
                 return result
-            return None
+            # Got valid JSON but not a dict (e.g., parsed a nested array).
+            # Continue trying other strategies that might parse the full object.
+            if verbose:
+                print(f"  ⚠ Strategy {strategy_name} parsed non-dict: {type(result).__name__}")
+            continue
         except (json.JSONDecodeError, TypeError, ValueError) as e:
             last_error = e
             continue

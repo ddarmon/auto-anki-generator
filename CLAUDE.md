@@ -80,6 +80,8 @@ auto-anki-generator/
 1. Check `.auto_anki_agent_state.json` (state_version=2, seen_conversations)
 2. Check `auto_anki_runs/run-*/` for `selected_conversations.json`, `codex_response_*.json`
 3. Use `--verbose` and `--dry-run` to inspect decisions/prompts
+4. Run `uv run python scripts/reconcile_state.py --dry-run` to check for state inconsistencies
+5. Run `uv run python scripts/reconcile_state.py --mark-stubs --dry-run` to find stub files
 
 ### Running Tests
 ```bash
@@ -116,9 +118,17 @@ BACKFILL_MODE=1 ./scripts/auto_anki_batch.sh
 
 # Progress dashboard
 uv run auto-anki-progress
+
+# State reconciliation (fix inconsistencies)
+uv run python scripts/reconcile_state.py --dry-run       # Preview
+uv run python scripts/reconcile_state.py --apply         # Apply
+
+# Mark stub files as processed (files with no valid turns)
+uv run python scripts/reconcile_state.py --mark-stubs --dry-run
+uv run python scripts/reconcile_state.py --mark-stubs --apply
 ```
 
-**Key flags:** `--dry-run`, `--verbose`, `--unprocessed-only`, `--date-range`, `--llm-backend`, `--llm-model`, `--llm-model-stage1/2`, `--only-zero-card-files`, `--reprocess-zero-card-files`
+**Key flags:** `--dry-run`, `--verbose`, `--unprocessed-only`, `--date-range`, `--llm-backend`, `--llm-model`, `--llm-model-stage1/2`, `--only-zero-card-files`, `--reprocess-zero-card-files`, `--exclude-patterns`
 
 ## Interactive Review UI
 
