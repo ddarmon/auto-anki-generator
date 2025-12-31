@@ -27,7 +27,7 @@ import textwrap
 from shiny import App, Inputs, Outputs, Session, reactive, render, ui
 import pandas as pd
 
-from auto_anki.codex import parse_codex_response_robust, run_codex_exec
+from auto_anki.llm import parse_codex_response_robust, run_codex_exec
 
 DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD = 0.7  # Default UI threshold for treating cards as duplicates
 
